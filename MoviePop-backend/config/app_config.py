@@ -66,6 +66,13 @@ class AppConfig:
         self.OPENLIST_BINARY_VERSION = ""
         self.OPENLIST_SOURCE_MODE = "builtin"
 
+        self.CLICKHOUSE_ENABLED = os.getenv("MOVIEPOP_CLICKHOUSE_ENABLED", "0").strip().lower() in {"1", "true", "yes", "on"}
+        self.CLICKHOUSE_HOST = os.getenv("MOVIEPOP_CLICKHOUSE_HOST", "127.0.0.1").strip() or "127.0.0.1"
+        self.CLICKHOUSE_PORT = int(os.getenv("MOVIEPOP_CLICKHOUSE_PORT", "8123") or 8123)
+        self.CLICKHOUSE_USER = os.getenv("MOVIEPOP_CLICKHOUSE_USER", "default").strip() or "default"
+        self.CLICKHOUSE_PASSWORD = os.getenv("MOVIEPOP_CLICKHOUSE_PASSWORD", "")
+        self.CLICKHOUSE_DATABASE = os.getenv("MOVIEPOP_CLICKHOUSE_DATABASE", "moviepop").strip() or "moviepop"
+
         self.DATA_DIR.mkdir(exist_ok=True)
         self.COVERS_DIR.mkdir(exist_ok=True)
 
@@ -111,6 +118,14 @@ class AppConfig:
             "auto_start": self.OPENLIST_AUTO_START,
             "binary_version": self.OPENLIST_BINARY_VERSION,
             "source_mode": self.normalize_openlist_source_mode(self.OPENLIST_SOURCE_MODE),
+        }
+        config["analytics"] = {
+            "clickhouse_enabled": self.CLICKHOUSE_ENABLED,
+            "clickhouse_host": self.CLICKHOUSE_HOST.strip(),
+            "clickhouse_port": self.CLICKHOUSE_PORT,
+            "clickhouse_user": self.CLICKHOUSE_USER.strip(),
+            "clickhouse_password": base64.b64encode(self.CLICKHOUSE_PASSWORD.encode()).decode() if self.CLICKHOUSE_PASSWORD else "",
+            "clickhouse_database": self.CLICKHOUSE_DATABASE.strip(),
         }
         with open(self.CONFIG_FILE, "w", encoding="utf-8") as file:
             config.write(file)
@@ -181,6 +196,16 @@ class AppConfig:
                 self.OPENLIST_AUTO_START = openlist_config.getboolean("auto_start", True)
                 self.OPENLIST_BINARY_VERSION = openlist_config.get("binary_version", "").strip()
                 self.OPENLIST_SOURCE_MODE = self.normalize_openlist_source_mode(openlist_config.get("source_mode", "builtin"))
+
+            if "analytics" in config:
+                analytics_config = config["analytics"]
+                self.CLICKHOUSE_ENABLED = analytics_config.getboolean("clickhouse_enabled", self.CLICKHOUSE_ENABLED)
+                self.CLICKHOUSE_HOST = analytics_config.get("clickhouse_host", self.CLICKHOUSE_HOST).strip() or "127.0.0.1"
+                self.CLICKHOUSE_PORT = analytics_config.getint("clickhouse_port", self.CLICKHOUSE_PORT or 8123)
+                self.CLICKHOUSE_USER = analytics_config.get("clickhouse_user", self.CLICKHOUSE_USER).strip() or "default"
+                clickhouse_pass_b64 = analytics_config.get("clickhouse_password", "")
+                self.CLICKHOUSE_PASSWORD = base64.b64decode(clickhouse_pass_b64).decode() if clickhouse_pass_b64 else self.CLICKHOUSE_PASSWORD
+                self.CLICKHOUSE_DATABASE = analytics_config.get("clickhouse_database", self.CLICKHOUSE_DATABASE).strip() or "moviepop"
 
             self._auto_detect_players()
             if self.DEFAULT_PLAYER not in {"potplayer", "vlc"}:

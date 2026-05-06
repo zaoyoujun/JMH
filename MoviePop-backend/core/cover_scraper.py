@@ -223,8 +223,14 @@ class CoverScraper:
         return None
 
     def _is_anime_content(self, movie_data):
-        media_type = str(movie_data.get("type", "") or "").strip()
-        return media_type in {"动画", "动漫"}
+        haystacks = [
+            str(movie_data.get("type", "") or "").strip().lower(),
+            str(movie_data.get("title", "") or "").strip().lower(),
+            str(movie_data.get("name", "") or "").strip().lower(),
+            str(movie_data.get("path", "") or "").strip().lower(),
+        ]
+        keywords = ["动画", "动漫", "anime", "anibk", "番剧", "/动漫/", "/动画/"]
+        return any(keyword in haystack for haystack in haystacks for keyword in keywords)
 
     def _has_tmdb_api_key(self):
         return bool(getattr(self.config, "TMDB_API_KEY", "").strip())
@@ -319,6 +325,30 @@ class CoverScraper:
         cover_path = local_cover_path
         intro_text = current_intro
         scraped_year = current_year
+
+        # 先走统一候选搜索，避免自动刮削只命中单一来源，且能感知季数
+        candidates = self.search_candidates(movie_data, custom_name=custom_name)
+        for candidate in candidates[:6]:
+            candidate_score = float(candidate.get("match_score") or 0)
+            candidate_source = str(candidate.get("source") or "")
+            if candidate_score < 20:
+                continue
+            if candidate_source == "AniBK" and not is_anime:
+                continue
+            new_cover, new_intro, new_year = self.download_by_candidate(candidate, movie_data)
+            if new_cover:
+                cover_path = new_cover
+            if new_intro:
+                intro_text = new_intro
+            if new_year:
+                scraped_year = new_year
+            if new_cover or new_intro or new_year:
+                logger.info(
+                    "[scrape] selected candidate source=%s title=%s",
+                    candidate_source,
+                    candidate.get("title", ""),
+                )
+                return cover_path, intro_text, scraped_year
 
         # 情况1：电影/无季数内容
         if is_movie:
@@ -711,6 +741,46 @@ class CoverScraper:
             logger.error(f"提取豆瓣封面失败: {e}")
             return None
 
+    def _get_douban_intro(self, detail_url):
+        """提取豆瓣简介并优先返回中文内容"""
+        try:
+            soup = self._get_douban_detail_soup(detail_url)
+            if not soup:
+                return ""
+            intro_block = soup.find("span", property="v:summary")
+            if intro_block:
+                intro = intro_block.get_text(" ", strip=True)
+                return normalize_chinese_punctuation(intro)
+            meta_desc = soup.find("meta", attrs={"name": "description"})
+            if meta_desc and meta_desc.get("content"):
+                return normalize_chinese_punctuation(meta_desc["content"].strip())
+            return ""
+        except Exception as e:
+            logger.error(f"提取豆瓣简介失败: {e}")
+            return ""
+
+    def _fetch_douban_year(self, detail_url):
+        """提取豆瓣年份"""
+        try:
+            soup = self._get_douban_detail_soup(detail_url)
+            if not soup:
+                return None
+            year_tag = soup.find("span", class_="year")
+            if year_tag:
+                year_match = re.search(r"(\d{4})", year_tag.get_text(" ", strip=True))
+                if year_match:
+                    return int(year_match.group(1))
+            page_text = soup.get_text(" ", strip=True)
+            year_match = re.search(r"(\d{4})", page_text)
+            if year_match:
+                year = int(year_match.group(1))
+                if 1900 <= year <= 2035:
+                    return year
+            return None
+        except Exception as e:
+            logger.error(f"提取豆瓣年份失败: {e}")
+            return None
+
     def _download_cover(self, cover_url, name):
         """下载封面到本地"""
         try:
@@ -832,7 +902,6 @@ class CoverScraper:
     def download_by_candidate(self, candidate, movie_data):
         """增强版：下载封面+提取简介（翻译）+刮削年份"""
         try:
-            # 1. 提取封面
             source = candidate.get("source")
             if source == "TMDB":
                 parse_func = self._get_tmdb_cover
@@ -841,32 +910,30 @@ class CoverScraper:
             else:
                 parse_func = self._get_anibk_cover
             cover_url = parse_func(candidate["url"])
-            if not cover_url:
-                return None, None, None
 
-            # 2. 下载封面
             name = movie_data.get("name", "cover")
             season = movie_data.get("season", 0)
             valid_name = "".join([c for c in name if c.isalnum() or c in (" ", "-", "_")])
-            cover_path = self._download_cover(cover_url, f"{valid_name}_S{season}")
+            cover_path = self._download_cover(cover_url, f"{valid_name}_S{season}") if cover_url else None
             if source == "Douban" and not cover_path:
                 cover_path = self._fallback_cover_from_tmdb(candidate, movie_data, f"{valid_name}_S{season}")
 
-            # 3. 提取简介（已含自动翻译）
             intro_text = ""
             if source == "AniBK":
                 intro_text = self._get_anibk_intro(candidate["url"])
             elif source == "TMDB":
                 intro_text = self._get_tmdb_intro(candidate["url"])
+            elif source == "Douban":
+                intro_text = self._get_douban_intro(candidate["url"])
 
-            # 4. 刮削原生年份
             scraped_year = None
             if source == "AniBK":
                 scraped_year = self._fetch_anibk_year(candidate["url"])
             elif source == "TMDB":
                 scraped_year = self._fetch_tmdb_year(candidate["url"])
+            elif source == "Douban":
+                scraped_year = self._fetch_douban_year(candidate["url"])
 
-            # 兜底：用标题提取的年份
             if not scraped_year and candidate.get("year"):
                 scraped_year = candidate["year"]
 
@@ -878,22 +945,96 @@ class CoverScraper:
 
     # ==================== 其他工具函数 ====================
     def _build_base_queries(self, movie_data, custom_name):
-        title = movie_data.get("title", "")
+        title = str(movie_data.get("title", "") or "")
+        name = str(movie_data.get("name", "") or "")
         year = movie_data.get("year", "")
+        season = int(movie_data.get("season") or 0)
         parsed = clean_title_for_search(title)
-        clean_base = parsed["clean_name"] or movie_data.get("name", title)
+        clean_base = parsed["clean_name"] or name or title
+        seasonless_base = self._strip_season_tokens(clean_base)
         queries = []
-        if custom_name:
-            queries.append(custom_name)
-        if clean_base:
-            queries.append(clean_base)
-            if year: queries.append(f"{clean_base} {year}")
+
+        for value in (custom_name, title, name, clean_base, seasonless_base):
+            normalized = str(value or "").strip()
+            if normalized:
+                queries.append(normalized)
+
+        if season > 0 and seasonless_base:
+            queries.extend(
+                [
+                    f"{seasonless_base} {self._season_label_cn(season)}",
+                    f"{seasonless_base} 第{season}季",
+                    f"{seasonless_base} Season {season}",
+                    f"{seasonless_base} S{season:02d}",
+                ]
+            )
+        if year:
+            base_for_year = seasonless_base or clean_base
+            if base_for_year:
+                queries.append(f"{base_for_year} {year}")
         return list(dict.fromkeys([q for q in queries if q]))
+
+    def _season_label_cn(self, season):
+        season_map = {
+            1: "第一季",
+            2: "第二季",
+            3: "第三季",
+            4: "第四季",
+            5: "第五季",
+            6: "第六季",
+            7: "第七季",
+            8: "第八季",
+            9: "第九季",
+            10: "第十季",
+        }
+        return season_map.get(int(season or 0), f"第{season}季")
+
+    def _strip_season_tokens(self, text):
+        value = str(text or "").strip()
+        patterns = [
+            r"第\s*[一二三四五六七八九十\d]+\s*季",
+            r"Season\s*\d+",
+            r"\bS\d{1,2}\b",
+            r"#\d+",
+        ]
+        for pattern in patterns:
+            value = re.sub(pattern, " ", value, flags=re.IGNORECASE)
+        return re.sub(r"\s+", " ", value).strip()
+
+    def _extract_candidate_season(self, text):
+        value = str(text or "")
+        match = re.search(r"第\s*([一二三四五六七八九十\d]+)\s*季", value, re.IGNORECASE)
+        if match:
+            season_token = match.group(1)
+            if season_token.isdigit():
+                return int(season_token)
+            cn_map = {
+                "一": 1,
+                "二": 2,
+                "三": 3,
+                "四": 4,
+                "五": 5,
+                "六": 6,
+                "七": 7,
+                "八": 8,
+                "九": 9,
+                "十": 10,
+            }
+            return cn_map.get(season_token)
+        match = re.search(r"\bS(\d{1,2})\b", value, re.IGNORECASE)
+        if match:
+            return int(match.group(1))
+        match = re.search(r"Season\s*(\d{1,2})", value, re.IGNORECASE)
+        if match:
+            return int(match.group(1))
+        return None
 
     def _score_candidate(self, movie_data, candidate):
         target_title = str(movie_data.get("title") or movie_data.get("name") or "").strip().lower()
         candidate_title = str(candidate.get("title") or "").strip().lower()
         target_year = int(movie_data.get("year") or 0)
+        target_season = int(movie_data.get("season") or 0)
+        candidate_season = self._extract_candidate_season(candidate.get("title"))
         candidate_year = int(candidate.get("year") or 0) if str(candidate.get("year") or "").isdigit() else 0
         score = 0.0
         if target_title and candidate_title:
@@ -909,6 +1050,11 @@ class CoverScraper:
         if target_year and candidate_year:
             gap = abs(target_year - candidate_year)
             score += max(0, 20 - min(gap, 20))
+        if target_season:
+            if candidate_season == target_season:
+                score += 26
+            elif candidate_season is not None:
+                score -= min(18, abs(candidate_season - target_season) * 8)
         if movie_data.get("is_series"):
             score += 5
         source_bonus = {"Douban": 6, "TMDB": 4, "AniBK": 3}

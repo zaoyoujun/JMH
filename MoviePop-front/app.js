@@ -677,11 +677,11 @@ async function refreshRecommendations(showToastAfter = false) {
 function getHomeHeroItems() {
   const merged = [];
   const seen = new Set();
-  const candidates = [...(state.recommendationItems || []), ...(state.items || [])];
+  const candidates = [...(state.items || []), ...(state.recommendationItems || [])];
   candidates.forEach((item) => {
     if (!item?.path || seen.has(item.path)) return;
     seen.add(item.path);
-    merged.push(item);
+    merged.push(resolveMovieViewModel(item));
   });
   return merged.slice(0, 8);
 }
@@ -694,12 +694,28 @@ function getResumeShelfItems(items = getDisplayItems()) {
 }
 
 function getMergedRecommendationItems() {
-  const libraryItems = (state.recommendationItems || []).slice(0, 4);
+  const libraryItems = (state.recommendationItems || []).slice(0, 4).map(resolveMovieViewModel);
   const externalItems = (state.externalRecommendations || []).slice(0, 12);
   return [
     ...externalItems.map((item) => ({ ...item, recommendation_origin: "external" })),
     ...libraryItems.map((item) => ({ ...item, recommendation_origin: "library" })),
   ];
+}
+
+function resolveMovieViewModel(movie) {
+  if (!movie?.path) return movie;
+  const latest = (state.items || []).find((item) => item.path === movie.path);
+  if (!latest) return movie;
+  return {
+    ...movie,
+    ...latest,
+    recommendation_score: movie.recommendation_score,
+    recommendation_breakdown: movie.recommendation_breakdown,
+    recommendation_reasons: movie.recommendation_reasons,
+    recommendation_origin: movie.recommendation_origin,
+    feedback: movie.feedback,
+    auto_tags: movie.auto_tags,
+  };
 }
 
 function syncHeroCarousel() {
@@ -1171,6 +1187,7 @@ function render() {
   renderNav();
   renderStats();
   renderToolbarState();
+  disposeReportCharts();
 
   if (state.view === "settings") {
     elements.contentShell.innerHTML = renderSettingsView();
@@ -1191,6 +1208,7 @@ function render() {
   if (state.view === "report") {
     elements.contentShell.innerHTML = renderReportView();
     clearRecommendationCarousel();
+    requestAnimationFrame(() => initReportCharts());
     return;
   }
 
@@ -1603,15 +1621,159 @@ async function loadReport() {
   }
 }
 
-function renderBarChartRow(name, count, maxCount, percent) {
-  const width = maxCount > 0 ? Math.max(6, Math.round((count / maxCount) * 100)) : 0;
-  return `
-    <div class="bar-chart-row">
-      <span class="bar-label">${escapeHtml(name)}</span>
-      <div class="bar-track"><i style="width:${width}%"></i></div>
-      <span class="bar-value">${percent !== undefined ? percent + "%" : count}</span>
-    </div>
-  `;
+const _reportChartInstances = [];
+let _reportResizeBound = false;
+
+function disposeReportCharts() {
+  _reportChartInstances.forEach((chart) => {
+    if (chart && !chart.isDisposed()) chart.dispose();
+  });
+  _reportChartInstances.length = 0;
+}
+
+function _bindReportResize() {
+  if (_reportResizeBound) return;
+  _reportResizeBound = true;
+  window.addEventListener("resize", () => {
+    _reportChartInstances.forEach((chart) => {
+      if (chart && !chart.isDisposed()) chart.resize();
+    });
+  });
+}
+
+function initReportCharts() {
+  disposeReportCharts();
+  _bindReportResize();
+  const d = state.reportData;
+  if (!d || typeof echarts === "undefined") return;
+
+  const theme = {
+    bgColor: "transparent",
+    textColor: "#c6d6f3",
+    titleColor: "#e5efff",
+    accent: "#e50914",
+    palette: ["#e50914", "#3b82f6", "#10b981", "#f59e0b", "#8b5cf6", "#ec4899"],
+  };
+
+  // 1. 饼图：影片类型分布
+  const pieEl = document.getElementById("reportPieChart");
+  if (pieEl) {
+    const chart = echarts.init(pieEl);
+    _reportChartInstances.push(chart);
+    const typeDist = d.type_distribution || [];
+    chart.setOption({
+      color: theme.palette,
+      tooltip: { trigger: "item", formatter: "{b}: {c} ({d}%)" },
+      series: [{
+        name: "类型占比",
+        type: "pie",
+        radius: ["40%", "70%"],
+        itemStyle: { borderRadius: 6, borderColor: "#121a2f", borderWidth: 2 },
+        label: { color: theme.textColor, fontSize: 12 },
+        data: typeDist.map((item) => ({ value: item.count, name: item.name })),
+      }],
+    });
+  }
+
+  // 2. 折线图：观影热度趋势（年代分布）
+  const lineEl = document.getElementById("reportLineChart");
+  if (lineEl) {
+    const chart = echarts.init(lineEl);
+    _reportChartInstances.push(chart);
+    const yearDist = d.year_distribution || [];
+    chart.setOption({
+      tooltip: { trigger: "axis" },
+      grid: { left: 50, right: 20, top: 30, bottom: 30 },
+      xAxis: {
+        type: "category",
+        data: yearDist.map((item) => item.name),
+        axisLabel: { color: theme.textColor, fontSize: 11 },
+        axisLine: { lineStyle: { color: "rgba(255,255,255,0.1)" } },
+      },
+      yAxis: {
+        type: "value",
+        axisLabel: { color: theme.textColor, fontSize: 11 },
+        splitLine: { lineStyle: { color: "rgba(255,255,255,0.06)" } },
+      },
+      series: [{
+        name: "影片数",
+        type: "line",
+        smooth: true,
+        data: yearDist.map((item) => item.count),
+        lineStyle: { color: theme.accent, width: 3 },
+        itemStyle: { color: theme.accent },
+        areaStyle: {
+          color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+            { offset: 0, color: "rgba(229,9,20,0.35)" },
+            { offset: 1, color: "rgba(229,9,20,0.02)" },
+          ]),
+        },
+      }],
+    });
+  }
+
+  // 3. 条形图：热度排行榜
+  const barEl = document.getElementById("reportBarChart");
+  if (barEl) {
+    const chart = echarts.init(barEl);
+    _reportChartInstances.push(chart);
+    const genres = (d.genre_preferences || []).slice(0, 8).reverse();
+    chart.setOption({
+      tooltip: { trigger: "axis" },
+      grid: { left: 80, right: 30, top: 10, bottom: 20 },
+      xAxis: {
+        type: "value",
+        axisLabel: { color: theme.textColor, fontSize: 11 },
+        splitLine: { lineStyle: { color: "rgba(255,255,255,0.06)" } },
+      },
+      yAxis: {
+        type: "category",
+        data: genres.map((item) => item.name),
+        axisLabel: { color: theme.textColor, fontSize: 12 },
+        axisLine: { lineStyle: { color: "rgba(255,255,255,0.1)" } },
+      },
+      series: [{
+        type: "bar",
+        data: genres.map((item) => item.weight),
+        barWidth: 16,
+        itemStyle: {
+          borderRadius: [0, 4, 4, 0],
+          color: new echarts.graphic.LinearGradient(0, 0, 1, 0, [
+            { offset: 0, color: "#3b82f6" },
+            { offset: 1, color: "#e50914" },
+          ]),
+        },
+      }],
+    });
+  }
+
+  // 4. 雷达图：用户偏好画像
+  const radarEl = document.getElementById("reportRadarChart");
+  if (radarEl) {
+    const chart = echarts.init(radarEl);
+    _reportChartInstances.push(chart);
+    const genres = (d.genre_preferences || []).slice(0, 6);
+    const maxWeight = Math.max(1, ...genres.map((g) => g.weight));
+    chart.setOption({
+      radar: {
+        indicator: genres.map((g) => ({ name: g.name, max: Math.ceil(maxWeight * 1.1) })),
+        axisName: { color: theme.textColor, fontSize: 12 },
+        splitArea: { areaStyle: { color: ["rgba(255,255,255,0.02)", "rgba(255,255,255,0.04)"] } },
+        splitLine: { lineStyle: { color: "rgba(255,255,255,0.08)" } },
+        axisLine: { lineStyle: { color: "rgba(255,255,255,0.1)" } },
+      },
+      series: [{
+        type: "radar",
+        data: [{
+          value: genres.map((g) => g.weight),
+          name: "偏好权重",
+          areaStyle: { color: "rgba(229,9,20,0.25)" },
+          lineStyle: { color: theme.accent, width: 2 },
+          itemStyle: { color: theme.accent },
+        }],
+      }],
+    });
+  }
 }
 
 function renderReportView() {
@@ -1627,14 +1789,13 @@ function renderReportView() {
   const overview = d.overview || {};
   const typeDist = d.type_distribution || [];
   const genres = d.genre_preferences || [];
-  const yearDist = d.year_distribution || [];
-  const sourceDist = d.source_distribution || [];
   const completion = d.completion_stats || {};
   const activity = d.recent_activity || [];
-
-  const typeMax = Math.max(1, ...typeDist.map((i) => i.count));
-  const yearMax = Math.max(1, ...yearDist.map((i) => i.count));
-  const sourceMax = Math.max(1, ...sourceDist.map((i) => i.count));
+  const warehouseStatus = d.warehouse_status || {};
+  const warehouseText = warehouseStatus.connected ? "仓库在线" : (warehouseStatus.reason || "当前使用应用内分析");
+  const topGenres = genres.slice(0, 4).map((item) => item.name).filter(Boolean);
+  const typeOptions = ["全部类型", ...typeDist.map((item) => item.name).filter(Boolean).slice(0, 6)];
+  const dimensionOptions = ["播放量", "用户评分", "收藏数"];
 
   const totalCompletion = (completion.completed || 0) + (completion.in_progress || 0) + (completion.not_started || 0) || 1;
   const completedPct = Math.round((completion.completed || 0) / totalCompletion * 100);
@@ -1650,67 +1811,101 @@ function renderReportView() {
 
   return `
     <div class="report-shell">
+      <section class="report-stage report-stage-board">
+        <div class="report-stage-copy">
+          <span class="section-eyebrow report-board-kicker">观影分析大屏</span>
+          <h3>爆米花电影 · 数据可视化大屏</h3>
+          <p>用户观影分析、片库热度变化和个性偏好会在这里汇总成更适合展示和扫读的分析面板。</p>
+          <div class="report-stage-meta">
+            <span>${warehouseText}</span>
+            <span>${topGenres.length ? `偏好标签：${escapeHtml(topGenres.join(" / "))}` : "等待更多行为数据"}</span>
+          </div>
+        </div>
+        <div class="report-stage-side">
+          <div class="report-stage-orbit orbit-a"></div>
+          <div class="report-stage-orbit orbit-b"></div>
+          <div class="report-stage-radar">
+            <strong>${overview.total_movies || 0}</strong>
+            <small>总条目</small>
+          </div>
+        </div>
+      </section>
+
+      <section class="report-filter-bar">
+        <label class="report-filter-item">
+          <span>时间范围</span>
+          <select>
+            <option>近7天</option>
+            <option selected>近30天</option>
+            <option>近90天</option>
+          </select>
+        </label>
+        <label class="report-filter-item">
+          <span>影片类型</span>
+          <select>
+            ${typeOptions.map((item, index) => `<option ${index === 0 ? "selected" : ""}>${escapeHtml(item)}</option>`).join("")}
+          </select>
+        </label>
+        <label class="report-filter-item">
+          <span>数据维度</span>
+          <select>
+            ${dimensionOptions.map((item, index) => `<option ${index === 0 ? "selected" : ""}>${escapeHtml(item)}</option>`).join("")}
+          </select>
+        </label>
+      </section>
+
       <div class="report-overview">
         ${overviewCards.map((c) => `
-          <article class="stat-chip">
-            <strong>${c.value}</strong>
+          <article class="report-kpi-card">
             <small>${c.label}${c.unit ? " " + c.unit : ""}</small>
+            <strong>${c.value}</strong>
           </article>
         `).join("")}
       </div>
 
       <div class="report-grid">
         <section class="report-section">
-          <h3>${"类型偏好"}</h3>
-          <div class="bar-chart">
-            ${typeDist.map((i) => renderBarChartRow(i.name, i.count, typeMax, i.percent)).join("")}
-          </div>
+          <div class="chart-title">影片类型分布</div>
+          <div id="reportPieChart" class="report-chart-box"></div>
         </section>
 
         <section class="report-section">
-          <h3>${"标签偏好"}</h3>
-          <div class="genre-cloud">
-            ${genres.length ? genres.map((g) => {
-              const size = Math.max(12, Math.min(22, 12 + Number(g.weight || 0) * 2.5));
-              return `<span class="genre-tag" style="font-size:${size}px">${escapeHtml(g.name)}</span>`;
-            }).join("") : `<span class="text-faint">${"暂无数据"}</span>`}
-          </div>
+          <div class="chart-title">观影热度趋势</div>
+          <div id="reportLineChart" class="report-chart-box"></div>
         </section>
 
         <section class="report-section">
-          <h3>${"年代分布"}</h3>
-          <div class="bar-chart">
-            ${yearDist.map((i) => renderBarChartRow(i.name, i.count, yearMax)).join("")}
-          </div>
+          <div class="chart-title">偏好标签排行榜</div>
+          <div id="reportBarChart" class="report-chart-box"></div>
         </section>
 
         <section class="report-section">
-          <h3>${"来源分布"}</h3>
-          <div class="bar-chart">
-            ${sourceDist.map((i) => renderBarChartRow(i.name, i.count, sourceMax)).join("")}
-          </div>
+          <div class="chart-title">用户偏好画像</div>
+          <div id="reportRadarChart" class="report-chart-box"></div>
         </section>
+      </div>
 
+      <div class="report-grid report-grid-bottom">
         <section class="report-section">
-          <h3>${"完播统计"}</h3>
+          <div class="chart-title">完播统计</div>
           <div class="completion-rings">
             <div class="ring-item">
               <div class="ring-progress" style="--pct:${completedPct};--color:var(--success)">${completedPct}%</div>
-              <span>${"已看完"}</span>
+              <span>已看完</span>
             </div>
             <div class="ring-item">
               <div class="ring-progress" style="--pct:${inProgressPct};--color:var(--teal)">${inProgressPct}%</div>
-              <span>${"在看"}</span>
+              <span>在看</span>
             </div>
             <div class="ring-item">
               <div class="ring-progress" style="--pct:${notStartedPct};--color:var(--text-faint)">${notStartedPct}%</div>
-              <span>${"未开始"}</span>
+              <span>未开始</span>
             </div>
           </div>
         </section>
 
         <section class="report-section report-timeline-section">
-          <h3>${"近期动态"}</h3>
+          <div class="chart-title">近期动态</div>
           <div class="timeline">
             ${activity.length ? activity.map((a) => {
               const date = a.timestamp ? new Date(a.timestamp * 1000) : null;
@@ -1723,7 +1918,7 @@ function renderReportView() {
                   <div class="timeline-progress"><span style="width:${a.progress}%"></span></div>
                 </div>
               `;
-            }).join("") : `<span class="text-faint">${"暂无数据"}</span>`}
+            }).join("") : `<span class="text-faint">暂无数据</span>`}
           </div>
         </section>
       </div>
@@ -4052,6 +4247,7 @@ async function refreshMovieAfterMetadataChange(moviePath) {
 
   await loadBootstrap();
   await loadCurrentView();
+  await refreshRecommendations(false);
 
   const nextSelectedMovie = getDisplayMovieByPath(selectedSeasonPath) || getDisplayMovieByPath(selectedRootPath) || getDisplayMovieByPath(moviePath);
   if (nextSelectedMovie) {
@@ -4106,6 +4302,9 @@ function startJobPolling(jobId, source, successMessage) {
         jobProgressBar.style.width = "0";
         await loadBootstrap();
         await loadCurrentView();
+        if (source === "remote" || source === "combined") {
+          await refreshRecommendations(false);
+        }
         showToast(successMessage, "success");
       }
 

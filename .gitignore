@@ -6,3 +6,5 @@ __pycache__/
 *.log
 MoviePop-backend/data/config.ini
 MoviePop-backend/data/openlist/data/
+MoviePop-backend/data/
+MoviePop-backend/covers/

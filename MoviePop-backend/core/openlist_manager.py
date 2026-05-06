@@ -4,8 +4,11 @@ import json
 import logging
 import os
 import platform
+import shutil
 import socket
 import subprocess
+import tarfile
+import tempfile
 import threading
 import time
 import zipfile
@@ -30,6 +33,7 @@ OPENLIST_HEALTH_INTERVAL = 10
 OPENLIST_MAX_RESTARTS = 3
 OPENLIST_PORT_RANGE = range(5244, 5265)
 OPENLIST_DOWNLOAD_TIMEOUT = 300  # 下载总超时 5 分钟
+OPENLIST_DOWNLOAD_CHUNK_SIZE = 8192
 OPENLIST_MIRRORS = [
     "https://ghfast.top",
     "https://ghproxy.cn",
@@ -391,6 +395,98 @@ class OpenListBinaryManager:
         self._openlist_dir.mkdir(parents=True, exist_ok=True)
         self._version_cache: dict[str, Any] = {}
 
+    def _ensure_openlist_dir(self) -> Path:
+        self._openlist_dir.mkdir(parents=True, exist_ok=True)
+        return self._openlist_dir
+
+    def _download_archive(
+        self,
+        url: str,
+        target_file: Path,
+        progress_cb: Callable[[int, int], None] | None = None,
+    ) -> None:
+        start_time = time.time()
+        with requests.get(
+            url,
+            stream=True,
+            timeout=(10, 30),
+            allow_redirects=True,
+            proxies=self._get_proxies(),
+            verify=False,
+        ) as resp:
+            resp.raise_for_status()
+            total = int(resp.headers.get("content-length", 0))
+            downloaded = 0
+            with open(target_file, "wb") as f:
+                for chunk in resp.iter_content(chunk_size=OPENLIST_DOWNLOAD_CHUNK_SIZE):
+                    if not chunk:
+                        continue
+                    if time.time() - start_time > OPENLIST_DOWNLOAD_TIMEOUT:
+                        raise TimeoutError("下载超时，请检查网络连接或代理配置")
+                    f.write(chunk)
+                    downloaded += len(chunk)
+                    if progress_cb and total > 0:
+                        progress_cb(downloaded, total)
+
+    @staticmethod
+    def _extract_binary_from_zip(archive_path: Path, target_binary: Path) -> None:
+        candidates = {target_binary.name, "openlist.exe", "openlist"}
+        with zipfile.ZipFile(archive_path, "r") as zf:
+            for name in zf.namelist():
+                basename = name.replace("\\", "/").split("/")[-1]
+                if basename not in candidates:
+                    continue
+                with zf.open(name) as src, open(target_binary, "wb") as dst:
+                    shutil.copyfileobj(src, dst)
+                return
+        raise FileNotFoundError(f"压缩包中未找到 {target_binary.name}")
+
+    @staticmethod
+    def _extract_binary_from_tar(archive_path: Path, target_binary: Path) -> None:
+        candidates = {target_binary.name, "openlist"}
+        with tarfile.open(archive_path, "r:gz") as tf:
+            for member in tf.getmembers():
+                basename = member.name.replace("\\", "/").split("/")[-1]
+                if basename not in candidates:
+                    continue
+                src = tf.extractfile(member)
+                if src is None:
+                    continue
+                with src, open(target_binary, "wb") as dst:
+                    shutil.copyfileobj(src, dst)
+                return
+        raise FileNotFoundError(f"压缩包中未找到 {target_binary.name}")
+
+    def _extract_binary(self, archive_path: Path, ext: str, target_binary: Path) -> None:
+        if ext == "zip":
+            self._extract_binary_from_zip(archive_path, target_binary)
+            return
+        self._extract_binary_from_tar(archive_path, target_binary)
+
+    @staticmethod
+    def _install_binary(extracted_binary: Path, target_binary: Path) -> None:
+        target_binary.parent.mkdir(parents=True, exist_ok=True)
+        temp_target = target_binary.with_suffix(target_binary.suffix + ".new")
+        backup_target = target_binary.with_suffix(target_binary.suffix + ".bak")
+
+        temp_target.unlink(missing_ok=True)
+        backup_target.unlink(missing_ok=True)
+
+        shutil.copy2(extracted_binary, temp_target)
+        if platform.system() != "Windows":
+            temp_target.chmod(temp_target.stat().st_mode | 0o755)
+
+        try:
+            if target_binary.exists():
+                os.replace(target_binary, backup_target)
+            os.replace(temp_target, target_binary)
+            backup_target.unlink(missing_ok=True)
+        except Exception:
+            temp_target.unlink(missing_ok=True)
+            if backup_target.exists() and not target_binary.exists():
+                os.replace(backup_target, target_binary)
+            raise
+
     def _get_proxies(self) -> dict[str, str] | None:
         if self._config.USE_PROXY and self._config.PROXY_URL:
             proxy = self._config.PROXY_URL.strip()
@@ -468,75 +564,31 @@ class OpenListBinaryManager:
 
         urls = self._get_download_urls(version)
         ext = "zip" if urls[0].endswith(".zip") else "tar.gz"
-        temp_file = self._openlist_dir / f"openlist_download.{ext}"
-
-        # 尝试所有下载源
-        last_error = None
-        for url in urls:
-            try:
-                logger.info("尝试下载 OpenList: %s", url)
-                proxies = self._get_proxies()
-                start_time = time.time()
-
-                resp = requests.get(
-                    url, stream=True, timeout=(10, 30),
-                    allow_redirects=True, proxies=proxies, verify=False,
-                )
-                resp.raise_for_status()
-
-                total = int(resp.headers.get("content-length", 0))
-                downloaded = 0
-
-                with open(temp_file, "wb") as f:
-                    for chunk in resp.iter_content(chunk_size=8192):
-                        # 检查总超时
-                        if time.time() - start_time > OPENLIST_DOWNLOAD_TIMEOUT:
-                            raise TimeoutError("下载超时，请检查网络连接或配置代理")
-                        f.write(chunk)
-                        downloaded += len(chunk)
-                        if progress_cb and total > 0:
-                            progress_cb(downloaded, total)
-
-                # 下载成功
-                logger.info("OpenList 下载成功: %s", url)
-                break
-            except Exception as exc:
-                last_error = exc
-                logger.warning("下载失败 %s: %s", url, exc)
-                if temp_file.exists():
-                    temp_file.unlink(missing_ok=True)
-                continue
-        else:
-            raise RuntimeError(f"所有下载源均失败，最后错误: {last_error}")
-
         binary_name = "openlist.exe" if platform.system() == "Windows" else "openlist"
-        target = self._openlist_dir / binary_name
+        target = self._ensure_openlist_dir() / binary_name
 
-        if ext == "zip":
-            with zipfile.ZipFile(temp_file, "r") as zf:
-                for name in zf.namelist():
-                    # 匹配 openlist.exe 或 openlist（可能在子目录中）
-                    basename = name.split("/")[-1]
-                    if basename == binary_name or basename == "openlist" or basename == "openlist.exe":
-                        with zf.open(name) as src, open(target, "wb") as dst:
-                            dst.write(src.read())
-                        break
-        else:
-            import tarfile
-            with tarfile.open(temp_file, "r:gz") as tf:
-                for member in tf.getmembers():
-                    basename = member.name.split("/")[-1]
-                    if basename == binary_name or basename == "openlist":
-                        src = tf.extractfile(member)
-                        if src:
-                            with open(target, "wb") as dst:
-                                dst.write(src.read())
-                            break
+        last_error = None
+        with tempfile.TemporaryDirectory(prefix="openlist-download-", dir=str(self._ensure_openlist_dir())) as temp_dir:
+            archive_path = Path(temp_dir) / f"openlist_download.{ext}"
+            extracted_binary = Path(temp_dir) / binary_name
 
-        if platform.system() != "Windows":
-            target.chmod(target.stat().st_mode | 0o755)
+            for url in urls:
+                try:
+                    logger.info("尝试下载 OpenList: %s", url)
+                    self._download_archive(url, archive_path, progress_cb)
+                    self._extract_binary(archive_path, ext, extracted_binary)
+                    self._install_binary(extracted_binary, target)
+                    logger.info("OpenList 下载并安装成功: %s", url)
+                    break
+                except Exception as exc:
+                    last_error = exc
+                    logger.warning("下载失败 %s: %s", url, exc)
+                    archive_path.unlink(missing_ok=True)
+                    extracted_binary.unlink(missing_ok=True)
+                    continue
+            else:
+                raise RuntimeError(f"所有下载源均失败，最后错误: {last_error}")
 
-        temp_file.unlink(missing_ok=True)
         self._config.OPENLIST_BINARY_VERSION = version
         self._config.save_config()
 

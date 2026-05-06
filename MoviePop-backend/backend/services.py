@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import quote, unquote, urlencode
 
+from backend.analytics import AnalyticsETLService, TFIDFRecommendationEngine
 from backend.recommendations import RecommendationEngine, RecommendationRepository
 from config.app_config import AppConfig
 from core.cover_scraper import CoverScraper
@@ -815,13 +816,15 @@ class RecommendationService:
         self.library_service = library_service
         self.repository = RecommendationRepository()
         self.engine = RecommendationEngine(self.repository)
+        self.analytics_engine = TFIDFRecommendationEngine()
+        self.analytics = AnalyticsETLService(library_service, self.repository)
 
     def get_dashboard(self, limit: int = 18, external_limit: int = 8) -> dict[str, Any]:
         profile = self.repository.load_profile()
         recommendation_payload = self.repository.load_recommendations(limit=limit)
         external_payload = self.repository.load_external_recommendations(limit=external_limit)
 
-        if not recommendation_payload["items"]:
+        if not recommendation_payload["items"] or profile.get("algorithm") != "tfidf_cosine":
             refreshed = self.refresh()
             recommendation_payload = {
                 "items": refreshed.get("items", [])[:limit],
@@ -850,8 +853,23 @@ class RecommendationService:
         }
 
     def refresh(self) -> dict[str, Any]:
-        movies = self.library_service.get_movies(mode="all", source="combined", search="", force_refresh=False)
-        payload = self.engine.generate_full_recommendations(movies)
+        snapshot = self.analytics.build_snapshot()
+        warehouse_status = self.analytics.sync_snapshot(snapshot)
+        analytics_payload = self.analytics_engine.generate(snapshot.get("movies", []))
+        for movie_path, tags in analytics_payload.get("auto_tags_map", {}).items():
+            self.repository.save_tags(movie_path, tags)
+        profile = analytics_payload.get("profile", {})
+        self.repository.save_profile(profile)
+        self.repository.save_recommendations(analytics_payload.get("items", []))
+        external_items = self.engine.fetch_external_recommendations(profile)
+        self.repository.save_external_recommendations(external_items)
+        payload = {
+            "items": analytics_payload.get("items", []),
+            "profile": profile,
+            "generated_at": int(time.time()),
+            "external_items": external_items[:15],
+            "warehouse_status": warehouse_status,
+        }
         profile = payload.get("profile", {})
         payload["stats"] = {
             "library_recommendations": len(payload.get("items", [])),
@@ -867,12 +885,16 @@ class RecommendationService:
             raise ValueError("未找到对应的影视条目")
         rating = max(0.0, min(5.0, float(rating)))
         self.repository.upsert_feedback(movie_path, rating=rating)
-        movies = self.library_service.get_movies(mode="all", source="combined", search="", force_refresh=False)
-        payload = self.engine.score_library_only(movies)
+        snapshot = self.analytics.build_snapshot()
+        analytics_payload = self.analytics_engine.generate(snapshot.get("movies", []))
+        for path_key, tags in analytics_payload.get("auto_tags_map", {}).items():
+            self.repository.save_tags(path_key, tags)
+        self.repository.save_profile(analytics_payload.get("profile", {}))
+        self.repository.save_recommendations(analytics_payload.get("items", []))
         return {
             "movie": self.library_service.get_movie(movie_path) or movie,
             "rating": rating,
-            "profile": payload.get("profile", {}),
+            "profile": analytics_payload.get("profile", {}),
         }
 
 
@@ -1109,8 +1131,7 @@ class OpenListService:
             value = "/" + value
         return value.rstrip("/") or "/"
 
-    @staticmethod
-    def _normalize_storage_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    def _normalize_storage_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
         normalized = dict(payload or {})
         driver = str(normalized.get("driver") or "").strip()
         addition = normalized.get("addition") or {}
@@ -1403,8 +1424,15 @@ class ReportService:
         self.library_service = library_service
         self.recommendation_service = recommendation_service
         self.cache = VideoCache()
+        self.analytics = AnalyticsETLService(library_service, recommendation_service.repository)
 
     def get_report(self) -> dict[str, Any]:
+        snapshot = self.analytics.build_snapshot()
+        warehouse_status = self.analytics.sync_snapshot(snapshot)
+        payload = self.analytics.build_report_payload(snapshot)
+        payload["warehouse_status"] = warehouse_status
+        return payload
+
         movies = self.library_service.get_movies(mode="all", source="combined", search="", force_refresh=False)
         favorites = self.cache.get_favorites()
         recent_play = self.cache.get_recent_play()

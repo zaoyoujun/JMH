@@ -311,6 +311,29 @@ class RecommendationEngine:
         self.config.load_config()
         self.scraper = CoverScraper()
 
+    def _local_cover_url(self, cover_path: str) -> str:
+        resolved = Path(cover_path)
+        if not resolved.exists():
+            return ""
+        try:
+            version = int(resolved.stat().st_mtime)
+        except OSError:
+            version = 0
+        return f"/covers/{quote(resolved.name)}?v={version}"
+
+    def _cache_external_cover(self, image_url: str, cache_key: str) -> str:
+        if not image_url:
+            return ""
+        safe_name = re.sub(r"[^a-zA-Z0-9_.-]+", "_", str(cache_key or "external_cover")).strip("_") or "external_cover"
+        for suffix in ("webp", "jpg", "png"):
+            existing = self.config.COVERS_DIR / f"{safe_name}.{suffix}"
+            if existing.exists():
+                return self._local_cover_url(str(existing))
+        cover_path = self.scraper._download_cover(image_url, safe_name)  # noqa: SLF001
+        if not cover_path:
+            return image_url
+        return self._local_cover_url(cover_path)
+
     def generate_auto_tags(self, movie: dict[str, Any]) -> list[str]:
         title = str(movie.get("title") or movie.get("name") or "")
         intro = str(movie.get("intro") or "")
@@ -609,6 +632,14 @@ class RecommendationEngine:
             if not title or key in dedupe:
                 continue
             dedupe.add(key)
+            detail_url = item.get("url") or ""
+            poster_url = item.get("img") or ""
+            if detail_url:
+                try:
+                    poster_url = self.scraper._get_douban_cover(detail_url) or poster_url  # noqa: SLF001
+                except Exception as exc:
+                    logger.warning("Douban cover resolve failed for %s: %s", detail_url, exc)
+            poster_url = self._cache_external_cover(poster_url, key)
             items.append(
                 {
                     "external_key": key,
@@ -616,8 +647,8 @@ class RecommendationEngine:
                     "title": title,
                     "year": int(year) if str(year).isdigit() else None,
                     "intro": "",
-                    "poster_url": item.get("img") or "",
-                    "url": item.get("url") or "",
+                    "poster_url": poster_url,
+                    "url": detail_url,
                     "score": 0.62,
                     "reasons": [f"豆瓣搜索命中“{term}”", "适合中文片库继续扩展"],
                 }

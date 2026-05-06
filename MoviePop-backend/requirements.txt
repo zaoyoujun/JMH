@@ -6,3 +6,5 @@ deep-translator==1.9.1
 fastapi==0.135.1
 uvicorn==0.42.0
 pywebview==6.2.1
+clickhouse-connect==0.8.18
+pyecharts==2.0.8
