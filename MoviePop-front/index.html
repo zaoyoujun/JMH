@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>鸡米花</title>
+  <link rel="stylesheet" href="/assets/styles.css">
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div class="brand-block">
+        <span class="brand-kicker">家庭影视库</span>
+        <h1>鸡米花</h1>
+        <p>合并本地与 WebDAV 的家庭影视库</p>
+      </div>
+
+<nav class="nav-list" id="navList">
+        <button class="nav-item active" data-view="all">我的片库</button>
+        <button class="nav-item" data-view="favorite">收藏</button>
+        <button class="nav-item" data-view="recent">最近播放</button>
+        <button class="nav-item" data-view="local">本地视频</button>
+        <button class="nav-item" data-view="report">观影报告</button>
+        <button class="nav-item" data-view="settings">设置</button>
+      </nav>
+
+      <div class="sidebar-status" id="sidebarStatus">
+        <span class="status-dot"></span>
+        <span>正在初始化</span>
+      </div>
+    </aside>
+
+    <main class="main-shell">
+      <header class="topbar">
+        <div class="headline">
+          <span class="headline-kicker" id="headlineKicker">媒体库</span>
+          <h2 id="pageTitle">我的片库</h2>
+          <p id="pageSubtitle">统一浏览本地与 WebDAV 的影片、剧集和动画。</p>
+        </div>
+
+        <div class="toolbar">
+          <label class="search-field">
+            <span>搜索</span>
+            <input id="searchInput" type="search" placeholder="按标题、别名、简介筛选">
+          </label>
+          <button class="toolbar-btn accent" id="refreshBtn">刷新片库</button>
+        </div>
+      </header>
+
+      <section class="stats-strip" id="statsStrip"></section>
+
+      <section class="job-banner hidden" id="jobBanner">
+        <div>
+          <strong id="jobTitle">后台任务进行中</strong>
+          <p id="jobMessage">请稍候</p>
+        </div>
+        <div class="job-progress">
+          <span id="jobProgressText">0 / 0</span>
+          <div class="progress-track"><span id="jobProgressBar"></span></div>
+        </div>
+      </section>
+
+      <section class="content-shell" id="contentShell"></section>
+    </main>
+  </div>
+
+  <div class="modal hidden" id="detailModal">
+    <div class="modal-backdrop" data-close="detailModal"></div>
+    <div class="modal-panel detail-panel">
+      <button class="modal-close" data-close="detailModal">关闭</button>
+      <div class="detail-layout" id="detailContent"></div>
+    </div>
+  </div>
+
+  <div class="modal hidden" id="editModal">
+    <div class="modal-backdrop" data-close="editModal"></div>
+    <div class="modal-panel compact-panel">
+      <button class="modal-close" data-close="editModal">关闭</button>
+      <form class="form-grid" id="editForm">
+        <div class="section-heading">
+          <span>编辑信息</span>
+          <h3>手动修正影片资料</h3>
+        </div>
+        <label>
+          <span>显示标题</span>
+          <input name="title" required>
+        </label>
+        <label>
+          <span>刮削名称</span>
+          <input name="name" required>
+        </label>
+        <label>
+          <span>类型</span>
+          <select name="type">
+            <option value="电影">电影</option>
+            <option value="剧集">剧集</option>
+            <option value="动画">动画</option>
+            <option value="纪录片">纪录片</option>
+          </select>
+        </label>
+        <label>
+          <span>年份</span>
+          <input name="year" type="number" min="1900" max="2099">
+        </label>
+        <label class="full-width">
+          <span>简介</span>
+          <textarea name="intro" rows="6"></textarea>
+        </label>
+        <div class="form-actions full-width">
+          <button type="button" class="ghost-btn" data-close="editModal">取消</button>
+          <button type="submit" class="primary-btn">保存修改</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <div class="modal hidden" id="directoryModal">
+    <div class="modal-backdrop" data-close="directoryModal"></div>
+    <div class="modal-panel compact-panel">
+      <button class="modal-close" data-close="directoryModal">关闭</button>
+      <div class="directory-shell">
+        <div class="section-heading">
+          <span id="directoryScopeLabel">目录选择</span>
+          <h3 id="directoryTitle">选择扫描目录</h3>
+        </div>
+        <div class="directory-toolbar">
+          <button class="ghost-btn" id="dirBackBtn">返回上级</button>
+          <button class="ghost-btn" id="dirSelectCurrentBtn">选当前目录</button>
+          <span id="dirCurrentPath">/</span>
+        </div>
+        <input type="text" id="dirSearchInput" class="dir-search-input" placeholder="搜索目录…" style="display:none;">
+        <div class="directory-list" id="directoryList"></div>
+        <div class="form-actions">
+          <button class="ghost-btn" data-close="directoryModal">取消</button>
+          <button class="primary-btn" id="dirConfirmBtn">保存选中目录</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal hidden" id="candidateModal">
+    <div class="modal-backdrop" data-close="candidateModal"></div>
+    <div class="modal-panel compact-panel">
+      <button class="modal-close" data-close="candidateModal">关闭</button>
+      <div class="candidate-shell">
+        <div class="section-heading">
+          <span>手动匹配</span>
+          <h3>选择正确的封面和元数据</h3>
+        </div>
+        <div class="candidate-toolbar">
+          <input id="candidateSearchInput" type="text" placeholder="输入名称、季数或年份后搜索">
+          <button class="primary-btn" id="candidateSearchBtn">搜索结果</button>
+        </div>
+        <div class="candidate-list" id="candidateList"></div>
+        <div class="form-actions">
+          <button class="ghost-btn" data-close="candidateModal">取消</button>
+          <button class="primary-btn" id="candidateApplyBtn">应用所选结果</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal hidden" id="tagsModal">
+    <div class="modal-backdrop" data-close="tagsModal"></div>
+    <div class="modal-panel compact-panel">
+      <button class="modal-close" data-close="tagsModal">关闭</button>
+      <div class="tags-shell">
+        <div class="section-heading">
+          <span>标签管理</span>
+          <h3>为影片添加或移除标签</h3>
+        </div>
+        <div class="tags-toolbar">
+          <input id="tagInput" type="text" placeholder="输入新标签">
+          <button class="primary-btn" id="addTagBtn">添加标签</button>
+        </div>
+        <div class="tags-list" id="tagsList"></div>
+        <div class="form-actions">
+          <button class="ghost-btn" data-close="tagsModal">关闭</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 首次配置向导 -->
+  <div class="wizard-overlay hidden" id="wizardOverlay">
+    <div class="wizard-modal" id="wizardModal"></div>
+  </div>
+
+  <div class="toast-host" id="toastHost"></div>
+
+  <script src="/assets/app.js"></script>
+</body>
+</html>
