@@ -1,7 +1,0 @@
-2026-05-06 12:34:23,216 - popcorn_player - INFO - OpenList 启动成功，端口: 5244, PID: 18328
-2026-05-06 12:34:26,881 - popcorn_player - INFO - 读取远程媒体库缓存
-2026-05-06 12:34:26,884 - popcorn_player - WARNING - 本地目录扫描为空
-2026-05-06 12:34:26,901 - popcorn_player - INFO - 使用远程媒体库内存缓存
-2026-05-06 12:34:26,903 - popcorn_player - WARNING - 本地目录扫描为空
-2026-05-06 12:35:23,619 - popcorn_player - INFO - 目录浏览请求: path=/, provider=webdav
-2026-05-06 12:35:25,023 - popcorn_player - INFO - Listed 8 directories under /

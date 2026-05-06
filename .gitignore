@@ -1,1 +1,8 @@
 MoviePop-backend/data/openlist/openlist.exe
+__pycache__/
+*.py[cod]
+*.sqlite3
+*.db
+*.log
+MoviePop-backend/data/config.ini
+MoviePop-backend/data/openlist/data/
