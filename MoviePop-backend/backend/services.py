@@ -20,6 +20,7 @@ from core.local_video_library import LocalVideoLibraryManager
 from core.remote_source import get_remote_provider_label, infer_remote_provider, make_remote_client
 from core.video_library import VideoLibraryManager
 from utils.database import VideoCache
+from utils.filename_parser import build_media_tags
 from utils.logger import get_logger, release_logger_handlers, reconfigure_logger
 
 logger = get_logger()
@@ -389,13 +390,30 @@ class LibraryService:
         }
         
         # 添加标签信息
-        item["tags"] = self.cache.get_movie_tags(item.get("path", ""))
+        manual_tags = [str(tag).strip() for tag in self.cache.get_movie_tags(item.get("path", "")) if str(tag).strip()]
+        inferred_tags = build_media_tags(item)
+        item["manual_tags"] = manual_tags
+        item["inferred_tags"] = inferred_tags
+        item["tags"] = list(dict.fromkeys(manual_tags + inferred_tags))
+        item["sort_bucket"] = int(item.get("sort_bucket") or 9)
+        item["sort_title"] = str(item.get("sort_title") or item.get("title") or item.get("name") or "").lower()
         return item
 
     def _movie_matches_source(self, movie: dict[str, Any], source: str) -> bool:
         if source == "combined":
             return True
         return self._source_for_path(movie.get("path", "")) == source
+
+    @staticmethod
+    def _movie_sort_key(movie: dict[str, Any]) -> tuple[Any, ...]:
+        return (
+            int(movie.get("sort_bucket") or 9),
+            str(movie.get("category") or ""),
+            str(movie.get("franchise") or ""),
+            str(movie.get("sort_title") or movie.get("title") or movie.get("name") or "").lower(),
+            int(movie.get("season") or 0),
+            str(movie.get("path") or ""),
+        )
 
     def _catalog_for_source(self, source: str, force_refresh: bool = False) -> list[dict[str, Any]]:
         if source == "combined":
@@ -427,7 +445,7 @@ class LibraryService:
         for movie in movies:
             decorated_movies.append(self._decorate_movie(movie, favorite_paths, source=source))
         
-        return decorated_movies
+        return sorted(decorated_movies, key=self._movie_sort_key)
 
     def get_movie(self, movie_path: str, source: str | None = None) -> dict[str, Any] | None:
         source_candidates = []
@@ -517,7 +535,7 @@ class LibraryService:
                 or keyword in movie.get("type", "").lower()
                 or keyword in movie.get("source_label", "").lower()
             ]
-        return movies
+        return sorted(movies, key=self._movie_sort_key)
 
     def refresh_library(self, source: str = "remote") -> list[dict[str, Any]]:
         return self.get_library(source=source, force_refresh=True)

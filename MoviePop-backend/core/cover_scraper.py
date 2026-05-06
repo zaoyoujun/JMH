@@ -21,9 +21,11 @@ HEADERS = {
 }
 ANIBK_BASE = "https://www.anibk.com"
 ANIBK_SEARCH = f"{ANIBK_BASE}/list/---------?order=20&kw="
+BANGUMI_API = "https://api.bgm.tv"
 TMDB_BASE = "https://www.themoviedb.org"
 TMDB_IMG_BASE = "https://image.tmdb.org/t/p/w500"
 DOUBAN_BASE = "https://movie.douban.com"
+IMDB_BASE = "https://www.imdb.com"
 
 
 # ==================== 新增：翻译辅助函数 ====================
@@ -781,6 +783,101 @@ class CoverScraper:
             logger.error(f"提取豆瓣年份失败: {e}")
             return None
 
+    def _bangumi_subject_id(self, detail_url):
+        match = re.search(r"/subject/(\d+)", str(detail_url or ""))
+        return match.group(1) if match else ""
+
+    def _bangumi_subject_payload(self, detail_url):
+        subject_id = self._bangumi_subject_id(detail_url)
+        if not subject_id:
+            return None
+        try:
+            response = requests.get(
+                f"{BANGUMI_API}/v0/subjects/{subject_id}",
+                headers={"User-Agent": "JMH/1.0"},
+                timeout=10,
+            )
+            response.raise_for_status()
+            return response.json()
+        except Exception as exc:
+            logger.warning("Bangumi detail failed for %s: %s", detail_url, exc)
+            return None
+
+    def _get_bangumi_cover(self, detail_url):
+        payload = self._bangumi_subject_payload(detail_url)
+        images = (payload or {}).get("images") or {}
+        return images.get("large") or images.get("common") or images.get("medium") or ""
+
+    def _get_bangumi_intro(self, detail_url):
+        payload = self._bangumi_subject_payload(detail_url)
+        summary = str((payload or {}).get("summary") or "").strip()
+        return translate_to_chinese(summary)
+
+    def _fetch_bangumi_year(self, detail_url):
+        payload = self._bangumi_subject_payload(detail_url)
+        date_value = str((payload or {}).get("date") or "").strip()
+        year_match = re.search(r"(\d{4})", date_value)
+        if year_match:
+            return int(year_match.group(1))
+        return None
+
+    def _get_imdb_detail_soup(self, detail_url):
+        try:
+            headers = HEADERS.copy()
+            headers["Referer"] = IMDB_BASE
+            response = requests.get(detail_url, headers=headers, timeout=12)
+            response.raise_for_status()
+            response.encoding = "utf-8"
+            return BeautifulSoup(response.text, "html.parser")
+        except Exception as exc:
+            logger.error(f"提取 IMDb 详情页失败: {exc}")
+            return None
+
+    def _get_imdb_cover(self, detail_url):
+        try:
+            soup = self._get_imdb_detail_soup(detail_url)
+            if not soup:
+                return None
+            og_img = soup.find("meta", property="og:image")
+            if og_img and og_img.get("content"):
+                return og_img["content"]
+            return None
+        except Exception as exc:
+            logger.error(f"提取 IMDb 封面失败: {exc}")
+            return None
+
+    def _get_imdb_intro(self, detail_url):
+        try:
+            soup = self._get_imdb_detail_soup(detail_url)
+            if not soup:
+                return ""
+            og_desc = soup.find("meta", property="og:description")
+            if og_desc and og_desc.get("content"):
+                return translate_to_chinese(og_desc["content"].strip())
+            return ""
+        except Exception as exc:
+            logger.error(f"提取 IMDb 简介失败: {exc}")
+            return ""
+
+    def _fetch_imdb_year(self, detail_url):
+        try:
+            soup = self._get_imdb_detail_soup(detail_url)
+            if not soup:
+                return None
+            og_title = soup.find("meta", property="og:title")
+            if og_title and og_title.get("content"):
+                year_match = re.search(r"\((\d{4})\)", og_title["content"])
+                if year_match:
+                    return int(year_match.group(1))
+            page_text = soup.get_text(" ", strip=True)
+            year_match = re.search(r"\b(19\d{2}|20\d{2}|21\d{2})\b", page_text)
+            if year_match:
+                return int(year_match.group(1))
+            return None
+        except Exception as exc:
+            logger.error(f"提取 IMDb 年份失败: {exc}")
+            return None
+
     def _download_cover(self, cover_url, name):
         """下载封面到本地"""
         try:
@@ -823,11 +920,22 @@ class CoverScraper:
         seen = set()
         logger.info(f"[candidate-search] start: {name}")
         is_series = movie_data.get("is_series", False)
-        source_fetchers = [
-            ("AniBK", lambda q: self._fetch_anibk_list(q)),
-            ("Douban", lambda q: self._fetch_douban_list(q)),
-            ("TMDB", lambda q: self._fetch_tmdb_list(q, is_series=is_series)),
-        ]
+        is_anime = self._is_anime_content(movie_data)
+        if is_anime:
+            source_fetchers = [
+                ("AniBK", lambda q: self._fetch_anibk_list(q)),
+                ("Bangumi", lambda q: self._fetch_bangumi_list(q)),
+                ("Douban", lambda q: self._fetch_douban_list(q)),
+                ("TMDB", lambda q: self._fetch_tmdb_list(q, is_series=is_series)),
+                ("IMDb", lambda q: self._fetch_imdb_list(q)),
+            ]
+        else:
+            source_fetchers = [
+                ("Douban", lambda q: self._fetch_douban_list(q)),
+                ("TMDB", lambda q: self._fetch_tmdb_list(q, is_series=is_series)),
+                ("IMDb", lambda q: self._fetch_imdb_list(q)),
+                ("AniBK", lambda q: self._fetch_anibk_list(q)),
+            ]
 
         for source_name, fetcher in source_fetchers:
             if source_name == "TMDB" and self._tmdb_is_temporarily_disabled():
@@ -890,8 +998,10 @@ class CoverScraper:
         candidates.sort(
             key=lambda item: (
                 float(item.get("match_score") or 0),
+                1 if item.get("source") == "Bangumi" else 0,
                 1 if item.get("source") == "Douban" else 0,
                 1 if item.get("source") == "TMDB" else 0,
+                1 if item.get("source") == "IMDb" else 0,
                 int(item.get("year") or 0),
             ),
             reverse=True,
@@ -907,6 +1017,10 @@ class CoverScraper:
                 parse_func = self._get_tmdb_cover
             elif source == "Douban":
                 parse_func = self._get_douban_cover
+            elif source == "Bangumi":
+                parse_func = self._get_bangumi_cover
+            elif source == "IMDb":
+                parse_func = self._get_imdb_cover
             else:
                 parse_func = self._get_anibk_cover
             cover_url = parse_func(candidate["url"])
@@ -925,6 +1039,10 @@ class CoverScraper:
                 intro_text = self._get_tmdb_intro(candidate["url"])
             elif source == "Douban":
                 intro_text = self._get_douban_intro(candidate["url"])
+            elif source == "Bangumi":
+                intro_text = self._get_bangumi_intro(candidate["url"])
+            elif source == "IMDb":
+                intro_text = self._get_imdb_intro(candidate["url"])
 
             scraped_year = None
             if source == "AniBK":
@@ -933,6 +1051,10 @@ class CoverScraper:
                 scraped_year = self._fetch_tmdb_year(candidate["url"])
             elif source == "Douban":
                 scraped_year = self._fetch_douban_year(candidate["url"])
+            elif source == "Bangumi":
+                scraped_year = self._fetch_bangumi_year(candidate["url"])
+            elif source == "IMDb":
+                scraped_year = self._fetch_imdb_year(candidate["url"])
 
             if not scraped_year and candidate.get("year"):
                 scraped_year = candidate["year"]
@@ -1057,7 +1179,7 @@ class CoverScraper:
                 score -= min(18, abs(candidate_season - target_season) * 8)
         if movie_data.get("is_series"):
             score += 5
-        source_bonus = {"Douban": 6, "TMDB": 4, "AniBK": 3}
+        source_bonus = {"Douban": 6, "TMDB": 4, "Bangumi": 5, "IMDb": 4, "AniBK": 3}
         score += source_bonus.get(candidate.get("source"), 0)
         return round(score, 2)
 
@@ -1128,17 +1250,72 @@ class CoverScraper:
             logger.warning(f"动漫科搜索失败: {e}")
             return []
 
+    def _fetch_bangumi_list(self, query):
+        try:
+            response = requests.post(
+                f"{BANGUMI_API}/v0/search/subjects",
+                params={"limit": 6, "offset": 0},
+                json={"keyword": query, "sort": "match", "filter": {"type": [2]}},
+                headers={"User-Agent": "JMH/1.0"},
+                timeout=10,
+            )
+            response.raise_for_status()
+            payload = response.json()
+            candidates = []
+            for item in payload.get("data", [])[:6]:
+                title = str(item.get("name_cn") or item.get("name") or "").strip()
+                subject_id = item.get("id")
+                if not title or not subject_id:
+                    continue
+                air_date = str(item.get("date") or "").strip()
+                candidates.append(
+                    {
+                        "title": title,
+                        "url": f"https://bgm.tv/subject/{subject_id}",
+                        "year": air_date[:4] if re.match(r"\d{4}", air_date) else "",
+                    }
+                )
+            return candidates
+        except Exception as exc:
+            logger.warning("Bangumi search failed for %s: %s", query, exc)
+            return []
+
+    def _fetch_imdb_list(self, query):
+        if not query:
+            return []
+        safe_term = re.sub(r"[^a-z0-9]+", "", query.lower())[:2] or "a"
+        try:
+            response = requests.get(
+                f"https://v3.sg.media-imdb.com/suggestion/{safe_term}/{quote(query)}.json",
+                headers={"User-Agent": "Mozilla/5.0"},
+                timeout=10,
+            )
+            response.raise_for_status()
+            payload = response.json()
+        except Exception as exc:
+            logger.warning("IMDb search failed for %s: %s", query, exc)
+            return []
+
+        candidates = []
+        for item in payload.get("d", [])[:6]:
+            title = str(item.get("l") or "").strip()
+            imdb_id = str(item.get("id") or "").strip()
+            year = item.get("y")
+            if not title or not imdb_id:
+                continue
+            candidates.append(
+                {
+                    "title": title,
+                    "url": f"{IMDB_BASE}/title/{imdb_id}/",
+                    "year": str(year) if year else "",
+                }
+            )
+        return candidates
+
     def _fetch_douban_list(self, query):
         candidates = []
         try:
-            headers = HEADERS.copy()
-            headers["Referer"] = DOUBAN_BASE
-            res = requests.get(
-                f"{DOUBAN_BASE}/j/subject_suggest",
-                params={"q": query},
-                headers=headers,
-                timeout=10,
-            )
+            _session, res = self._douban_get(f"{DOUBAN_BASE}/j/subject_suggest?q={quote(query)}")
             res.raise_for_status()
             payload = res.json()
             for item in payload[:10]:
@@ -1157,14 +1334,7 @@ class CoverScraper:
             return candidates
 
         try:
-            headers = HEADERS.copy()
-            headers["Referer"] = DOUBAN_BASE
-            res = requests.get(
-                f"{DOUBAN_BASE}/search",
-                params={"q": query},
-                headers=headers,
-                timeout=10,
-            )
+            _session, res = self._douban_get(f"{DOUBAN_BASE}/search?q={quote(query)}")
             res.raise_for_status()
             res.encoding = "utf-8"
             soup = BeautifulSoup(res.text, "html.parser")

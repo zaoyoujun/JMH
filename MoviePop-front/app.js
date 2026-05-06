@@ -1232,10 +1232,9 @@ function render() {
 
   const heroItems = getHomeHeroItems();
   const featured = heroItems[0] || displayItems[0];
-  elements.contentShell.innerHTML = `
-    <div class="library-home">
-      ${renderShelfHero(featured, heroItems)}
-      ${state.view === "all" ? renderHomeRecommendationSection() : ""}
+  const groupedLibraryMarkup = !state.search && isListView(state.view)
+    ? renderDynamicLibrarySections(displayItems)
+    : `
       <section class="library-grid-shell">
         <div class="section-head">
           <div>
@@ -1248,6 +1247,12 @@ function render() {
           ${displayItems.map(renderMovieCard).join("")}
         </div>
       </section>
+    `;
+  elements.contentShell.innerHTML = `
+    <div class="library-home">
+      ${renderShelfHero(featured, heroItems)}
+      ${state.view === "all" ? renderHomeRecommendationSection() : ""}
+      ${groupedLibraryMarkup}
     </div>
   `;
   syncRecommendationCarousel();
@@ -1316,6 +1321,100 @@ function getCollectionSummary() {
   if (state.view === "all") return "本地与远程内容会统一陈列，播放、收藏和补全都在同一个视图里完成。";
   if (state.view === "favorite") return "把常看和舍不得删的作品留在手边。";
   return "从最近打开的内容继续往下看。";
+}
+
+function getPrimaryLibraryGroup(movie) {
+  const tags = Array.isArray(movie?.tags) ? movie.tags : [];
+  const category = String(movie?.category || "").trim();
+  if (tags.includes("合集")) return "合集系列";
+  if (category === "动漫") return "动漫";
+  if (category === "电视剧") return "电视剧";
+  if (category === "电影") return "电影";
+  return "其他整理";
+}
+
+function getGroupSortWeight(name) {
+  const weights = {
+    "合集系列": 0,
+    "动漫": 1,
+    "电视剧": 2,
+    "电影": 3,
+    "其他整理": 9,
+  };
+  return weights[name] ?? 99;
+}
+
+function buildDynamicLibrarySections(items = []) {
+  const groups = new Map();
+  for (const item of items) {
+    const groupName = getPrimaryLibraryGroup(item);
+    if (!groups.has(groupName)) groups.set(groupName, []);
+    groups.get(groupName).push(item);
+  }
+
+  return [...groups.entries()]
+    .sort((left, right) => {
+      const [leftName, leftItems] = left;
+      const [rightName, rightItems] = right;
+      const weightGap = getGroupSortWeight(leftName) - getGroupSortWeight(rightName);
+      if (weightGap !== 0) return weightGap;
+      return rightItems.length - leftItems.length;
+    })
+    .map(([name, sectionItems]) => {
+      const franchiseCounter = new Map();
+      const tagCounter = new Map();
+      for (const item of sectionItems) {
+        const franchise = String(item?.franchise || "").trim();
+        if (franchise) franchiseCounter.set(franchise, (franchiseCounter.get(franchise) || 0) + 1);
+        for (const tag of Array.isArray(item?.inferred_tags) ? item.inferred_tags : []) {
+          if (["动漫", "电视剧", "电影", "单片", "多集", "动漫库", "电视剧库", "电影库"].includes(tag)) continue;
+          tagCounter.set(tag, (tagCounter.get(tag) || 0) + 1);
+        }
+      }
+      const topFranchise = [...franchiseCounter.entries()].sort((a, b) => b[1] - a[1])[0];
+      const topTags = [...tagCounter.entries()]
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 3)
+        .map(([tag]) => tag);
+
+      let summary = `当前分组共 ${sectionItems.length} 个条目。`;
+      if (topFranchise && topFranchise[1] >= 2) {
+        summary = `当前以 ${topFranchise[0]} 等系列为主，共 ${sectionItems.length} 个条目。`;
+      } else if (topTags.length) {
+        summary = `当前更多集中在 ${topTags.join(" / ")} 这类内容，共 ${sectionItems.length} 个条目。`;
+      }
+
+      return {
+        key: `${name}-${sectionItems.length}`,
+        title: name,
+        eyebrow: `${name} ${sectionItems.length}`,
+        summary,
+        items: sectionItems,
+      };
+    });
+}
+
+function renderDynamicLibrarySections(items = []) {
+  const sections = buildDynamicLibrarySections(items);
+  if (!sections.length) return "";
+  return `
+    <div class="library-group-stack">
+      ${sections.map((section) => `
+        <section class="library-grid-shell library-group-shell" data-library-group="${escapeAttr(section.title)}">
+          <div class="section-head">
+            <div>
+              <span class="section-eyebrow">${escapeHtml(section.eyebrow)}</span>
+              <h3>${escapeHtml(section.title)}</h3>
+            </div>
+            <p>${escapeHtml(section.summary)}</p>
+          </div>
+          <div class="library-grid">
+            ${section.items.map(renderMovieCard).join("")}
+          </div>
+        </section>
+      `).join("")}
+    </div>
+  `;
 }
 
 function renderShelfHero(movie, heroItems = []) {
@@ -3888,7 +3987,7 @@ function openCandidateModal(movie) {
   state.candidateItems = [];
   state.candidateDiagnostics = [];
   state.candidateSearchText = movie.name || movie.title || "";
-  state.candidateStatus = { kind: "info", text: "输入更准确的片名、季数或年份，可以同时从 TMDB、豆瓣和 AniBK 拿到更稳的候选结果。" };
+  state.candidateStatus = { kind: "info", text: "输入更准确的片名、季数或年份，可以同时从 Douban、TMDB、Bangumi、AniBK 和 IMDb 拿到更稳的候选结果。" };
   document.getElementById("candidateSearchInput").value = state.candidateSearchText;
   renderCandidateModal();
   openModal("candidateModal");
@@ -4078,7 +4177,7 @@ function renderCandidateModal() {
       <div class="candidate-empty">
         <span class="section-eyebrow">${"手动刮削"}</span>
         <h4>${currentTitle}</h4>
-        <p>${"这里会展示 TMDB、豆瓣和 AniBK 的候选结果，优先看分数、年份和命中搜索词。"}</p>
+        <p>${"这里会展示 Douban、TMDB、Bangumi、AniBK 和 IMDb 的候选结果，优先看分数、年份和命中搜索词。"}</p>
         ${status}
         ${diagnostics}
       </div>

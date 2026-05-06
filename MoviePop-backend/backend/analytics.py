@@ -11,6 +11,7 @@ from typing import Any
 from backend.warehouse import ClickHouseWarehouse, build_time_dimension_rows
 from config.app_config import AppConfig
 from utils.database import VideoCache
+from utils.filename_parser import build_media_tags
 
 LOCAL_PATH_RE = re.compile(r"^(?:[A-Za-z]:[\\/]|\\\\)")
 
@@ -252,6 +253,7 @@ class AnalyticsETLService:
 
     def _build_auto_tags(self, movie: dict[str, Any], existing_tags: list[str]) -> list[str]:
         tags = self._unique([str(item).strip() for item in existing_tags if str(item).strip()])
+        tags.extend(build_media_tags(movie))
         title = str(movie.get("title") or movie.get("name") or "")
         intro = str(movie.get("intro") or "")
         media_type = str(movie.get("type") or "")

@@ -15,6 +15,7 @@ import requests
 from config.app_config import AppConfig
 from core.cover_scraper import CoverScraper
 from utils.logger import get_logger
+from utils.filename_parser import build_media_tags
 
 
 logger = get_logger()
@@ -339,6 +340,7 @@ class RecommendationEngine:
         intro = str(movie.get("intro") or "")
         raw_text = f"{title} {intro} {movie.get('type', '')} {' '.join(movie.get('tags') or [])}".lower()
         tags = set(str(item).strip() for item in (movie.get("tags") or []) if str(item).strip())
+        tags.update(build_media_tags(movie))
         media_type = str(movie.get("type") or "").strip()
         if media_type:
             tags.add(media_type)

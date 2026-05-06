@@ -2267,6 +2267,15 @@ select:disabled {
     var(--panel);
 }
 
+.library-group-stack {
+  display: grid;
+  gap: 18px;
+}
+
+.library-group-shell {
+  padding-top: 20px;
+}
+
 .settings-tip-copy {
   display: grid;
   gap: 8px;
