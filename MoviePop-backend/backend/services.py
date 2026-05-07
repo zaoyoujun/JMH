@@ -1,16 +1,24 @@
 from __future__ import annotations
 
 import copy
+import json
 import logging
 import os
+import platform
 import re
+import secrets
 import shutil
+import socket
 import string
 import subprocess
+import threading
 import time
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import quote, unquote, urlencode
+
+import requests
 
 from backend.analytics import AnalyticsETLService, TFIDFRecommendationEngine
 from backend.recommendations import RecommendationEngine, RecommendationRepository
@@ -141,7 +149,9 @@ class ConfigService:
         self.config.POTPLAYER_PATH = str(payload.get("potplayer_path", self.config.POTPLAYER_PATH)).strip()
         self.config.VLC_PATH = str(payload.get("vlc_path", self.config.VLC_PATH)).strip()
         default_player = str(payload.get("default_player", self.config.DEFAULT_PLAYER)).strip().lower()
-        self.config.DEFAULT_PLAYER = default_player if default_player in {"potplayer", "vlc"} else "potplayer"
+        if default_player == "builtin":
+            default_player = "vlc_controlled"
+        self.config.DEFAULT_PLAYER = default_player if default_player in {"vlc_controlled", "libvlc_desktop", "potplayer", "vlc"} else "potplayer"
 
         video_formats = payload.get("video_formats")
         if isinstance(video_formats, list):
@@ -921,6 +931,14 @@ class PlaybackService:
         self.config = AppConfig()
         self.config.load_config()
         self.library_service = library_service
+        self._vlc_lock = threading.RLock()
+        self._vlc_session: dict[str, Any] | None = None
+        self._vlc_monitor_thread: threading.Thread | None = None
+        self._vlc_session_file = self.config.DATA_DIR / "vlc_controlled_session.json"
+        self._libvlc_lock = threading.RLock()
+        self._libvlc_session: dict[str, Any] | None = None
+        self._libvlc_monitor_thread: threading.Thread | None = None
+        self._restore_vlc_controlled_session()
 
     def _resolve_player(self) -> tuple[str, str]:
         if (
@@ -934,6 +952,277 @@ class PlaybackService:
         if self.config.VLC_PATH and os.path.exists(self.config.VLC_PATH):
             return self.config.VLC_PATH, "VLC"
         raise FileNotFoundError("未找到可用播放器，请先在设置中配置 PotPlayer 或 VLC。")
+
+    def _resolve_vlc_path(self) -> str:
+        if self.config.VLC_PATH and os.path.exists(self.config.VLC_PATH):
+            return self.config.VLC_PATH
+        for path in getattr(self.config, "DEFAULT_VLC_PATHS", []):
+            if os.path.exists(path):
+                self.config.VLC_PATH = path
+                return path
+        raise FileNotFoundError("未找到 VLC，请先在设置中配置 VLC 路径。")
+
+    def _allocate_vlc_http_port(self, start: int = 18123, attempts: int = 40) -> int:
+        for port in range(start, start + attempts):
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                if sock.connect_ex(("127.0.0.1", port)) != 0:
+                    return port
+        raise RuntimeError("未找到可用的 VLC 控制端口。")
+
+    def _vlc_status_url(self, session: dict[str, Any]) -> str:
+        return f"http://127.0.0.1:{int(session['http_port'])}/requests/status.xml"
+
+    def _send_vlc_http_command(self, session: dict[str, Any], command: str, value: str | None = None) -> dict[str, Any]:
+        params = {"command": command}
+        if value is not None:
+            params["val"] = value
+        response = requests.get(
+            self._vlc_status_url(session),
+            params=params,
+            auth=("", str(session["http_password"])),
+            timeout=5,
+        )
+        response.raise_for_status()
+        return self._parse_vlc_status_xml(response.text)
+
+    def _fetch_vlc_status(self, session: dict[str, Any]) -> dict[str, Any]:
+        response = requests.get(
+            self._vlc_status_url(session),
+            auth=("", str(session["http_password"])),
+            timeout=5,
+        )
+        response.raise_for_status()
+        return self._parse_vlc_status_xml(response.text)
+
+    def _parse_vlc_status_xml(self, xml_text: str) -> dict[str, Any]:
+        root = ET.fromstring(xml_text)
+        status: dict[str, Any] = {
+            "state": (root.findtext("state") or "").strip() or "unknown",
+            "time": int(float(root.findtext("time") or 0)),
+            "length": int(float(root.findtext("length") or 0)),
+            "position": float(root.findtext("position") or 0),
+            "volume": int(float(root.findtext("volume") or 0)) if (root.findtext("volume") or "").strip() else 0,
+        }
+        info = root.find("information")
+        if info is not None:
+            category = info.find("./category[@name='meta']")
+            if category is not None:
+                for child in list(category):
+                    key = str(child.attrib.get("name") or child.tag or "").strip()
+                    if key:
+                        status[key] = str(child.text or "").strip()
+        return status
+
+    def _build_persistable_vlc_session(self, session: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "token": session.get("token"),
+            "active": bool(session.get("active")),
+            "player": session.get("player"),
+            "movie_path": session.get("movie_path"),
+            "resolved_path": session.get("resolved_path"),
+            "play_url": session.get("play_url"),
+            "title": session.get("title"),
+            "display_title": session.get("display_title"),
+            "source": session.get("source"),
+            "remote_provider": session.get("remote_provider"),
+            "is_series": bool(session.get("is_series")),
+            "episode_index": int(session.get("episode_index") or 0),
+            "http_port": int(session.get("http_port") or 0),
+            "http_password": str(session.get("http_password") or ""),
+            "state": session.get("state"),
+            "progress_seconds": int(session.get("progress_seconds") or 0),
+            "duration_seconds": int(session.get("duration_seconds") or 0),
+            "position": float(session.get("position") or 0),
+            "volume": int(session.get("volume") or 0),
+            "recent_marked": bool(session.get("recent_marked")),
+            "completed": bool(session.get("completed")),
+            "started_at": int(session.get("started_at") or 0),
+            "updated_at": int(session.get("updated_at") or 0),
+        }
+
+    def _persist_vlc_session_locked(self) -> None:
+        session = self._vlc_session
+        if not session:
+            self._clear_persisted_vlc_session()
+            return
+        try:
+            with open(self._vlc_session_file, "w", encoding="utf-8") as file:
+                json.dump(self._build_persistable_vlc_session(session), file, ensure_ascii=False, indent=2)
+        except Exception:
+            logger.debug("persist VLC controlled session failed", exc_info=True)
+
+    def _clear_persisted_vlc_session(self) -> None:
+        try:
+            if self._vlc_session_file.exists():
+                self._vlc_session_file.unlink()
+        except Exception:
+            logger.debug("clear VLC controlled session cache failed", exc_info=True)
+
+    def _restore_vlc_controlled_session(self) -> None:
+        if not self._vlc_session_file.exists():
+            return
+        try:
+            with open(self._vlc_session_file, "r", encoding="utf-8") as file:
+                restored = json.load(file)
+        except Exception:
+            self._clear_persisted_vlc_session()
+            return
+
+        if not isinstance(restored, dict) or not restored.get("movie_path") or not restored.get("http_port"):
+            self._clear_persisted_vlc_session()
+            return
+
+        session = dict(restored)
+        session["active"] = bool(session.get("active", True))
+        session["process"] = None
+        session.setdefault("player", "vlc_controlled")
+        session.setdefault("display_title", session.get("title") or "")
+        session.setdefault("state", "launching")
+        session.setdefault("progress_seconds", 0)
+        session.setdefault("duration_seconds", 0)
+        session.setdefault("position", 0.0)
+        session.setdefault("volume", 0)
+        session.setdefault("recent_marked", False)
+        session.setdefault("completed", False)
+
+        try:
+            status = self._fetch_vlc_status(session)
+        except Exception:
+            self._clear_persisted_vlc_session()
+            return
+
+        self._merge_vlc_session_status(session, status)
+        self._sync_vlc_playback_state(session)
+        token = str(session.get("token") or secrets.token_hex(12))
+        session["token"] = token
+        with self._vlc_lock:
+            self._vlc_session = session
+            self._persist_vlc_session_locked()
+            self._vlc_monitor_thread = threading.Thread(
+                target=self._vlc_monitor_loop,
+                args=(token,),
+                name="moviepop-vlc-monitor-restored",
+                daemon=True,
+            )
+            self._vlc_monitor_thread.start()
+
+    def _merge_vlc_session_status(self, session: dict[str, Any], status: dict[str, Any]) -> None:
+        session["state"] = status.get("state", session.get("state", "unknown"))
+        session["progress_seconds"] = max(0, int(status.get("time") or 0))
+        session["duration_seconds"] = max(0, int(status.get("length") or 0))
+        session["position"] = float(status.get("position") or 0)
+        session["volume"] = int(status.get("volume") or 0)
+        session["updated_at"] = int(time.time())
+        meta_title = str(status.get("title") or "").strip()
+        if meta_title:
+            session["display_title"] = meta_title
+        elif not session.get("display_title"):
+            session["display_title"] = session.get("title") or ""
+
+    def _sync_vlc_playback_state(self, session: dict[str, Any]) -> None:
+        movie_path = str(session.get("movie_path") or "")
+        if not movie_path:
+            return
+
+        progress_seconds = max(0, int(session.get("progress_seconds") or 0))
+        duration_seconds = max(0, int(session.get("duration_seconds") or 0))
+        state = str(session.get("state") or "")
+
+        if not session.get("recent_marked") and state in {"opening", "playing", "paused"}:
+            try:
+                self.library_service.add_recent(movie_path)
+            except Exception:
+                logger.debug("mark recent failed for %s", movie_path, exc_info=True)
+            session["recent_marked"] = True
+
+        if duration_seconds > 0 and progress_seconds > 0:
+            try:
+                self.library_service.save_playback_progress(movie_path, float(progress_seconds), float(duration_seconds))
+            except Exception:
+                logger.debug("save progress failed for %s", movie_path, exc_info=True)
+
+        completed = duration_seconds > 0 and progress_seconds >= max(duration_seconds - 15, int(duration_seconds * 0.97))
+        if completed:
+            try:
+                self.library_service.clear_playback_progress(movie_path)
+            except Exception:
+                logger.debug("clear progress failed for %s", movie_path, exc_info=True)
+            session["completed"] = True
+
+        self._persist_vlc_session_locked()
+
+    def _stop_existing_vlc_session_locked(self) -> None:
+        session = self._vlc_session
+        if not session:
+            self._clear_persisted_vlc_session()
+            return
+        session["active"] = False
+        self._persist_vlc_session_locked()
+        try:
+            self._send_vlc_http_command(session, "pl_stop")
+        except Exception:
+            logger.debug("stop VLC http session failed", exc_info=True)
+        process = session.get("process")
+        if process and process.poll() is None:
+            try:
+                process.terminate()
+                process.wait(timeout=5)
+            except Exception:
+                try:
+                    process.kill()
+                except Exception:
+                    logger.debug("kill VLC process failed", exc_info=True)
+        self._vlc_session = None
+        self._clear_persisted_vlc_session()
+
+    def _vlc_monitor_loop(self, token: str) -> None:
+        while True:
+            with self._vlc_lock:
+                session = self._vlc_session
+                if not session or session.get("token") != token or not session.get("active"):
+                    return
+            try:
+                status = self._fetch_vlc_status(session)
+                with self._vlc_lock:
+                    active = self._vlc_session
+                    if not active or active.get("token") != token:
+                        return
+                    self._merge_vlc_session_status(active, status)
+                    self._sync_vlc_playback_state(active)
+                    process = active.get("process")
+                    if process and process.poll() is not None and active.get("state") == "stopped":
+                        active["active"] = False
+                        self._persist_vlc_session_locked()
+            except Exception:
+                logger.debug("poll VLC status failed", exc_info=True)
+                with self._vlc_lock:
+                    active = self._vlc_session
+                    if active and active.get("token") == token:
+                        process = active.get("process")
+                        if process and process.poll() is not None:
+                            active["active"] = False
+                            self._persist_vlc_session_locked()
+                        elif not process:
+                            active["active"] = False
+                            self._persist_vlc_session_locked()
+            time.sleep(2)
+
+    def _resolve_movie_for_playback(self, movie_path: str) -> dict[str, Any]:
+        movie = self.library_service.get_movie(movie_path)
+        if not movie:
+            raise ValueError("鏈壘鍒板搴旂殑瑙嗛鏉＄洰")
+        return movie
+
+    def _resolve_file_path(self, movie: dict[str, Any], episode_index: int = 0) -> str:
+        file_path = movie.get("path", "")
+        if movie.get("is_series") and movie.get("episode_files"):
+            episode_files = movie.get("episode_files", [])
+            if 0 <= episode_index < len(episode_files):
+                file_path = episode_files[episode_index]
+        if not file_path:
+            raise ValueError("瑙嗛璺緞鏃犳晥")
+        return str(file_path)
 
     def build_proxy_play_url(self, movie_path: str, episode_index: int = 0) -> str:
         movie = self.library_service.get_movie(movie_path)
@@ -961,6 +1250,139 @@ class PlaybackService:
         encoded_name = encoded_name.replace(" ", "%20")
         from backend.server import resolved_port
         return f"http://127.0.0.1:{resolved_port}/api/stream/media/{encoded_name}?{query}"
+
+    def start_vlc_controlled_playback(self, movie_path: str, episode_index: int = 0) -> dict[str, Any]:
+        movie = self._resolve_movie_for_playback(movie_path)
+        file_path = self._resolve_file_path(movie, episode_index)
+        vlc_path = self._resolve_vlc_path()
+        http_port = self._allocate_vlc_http_port()
+        http_password = secrets.token_urlsafe(18)
+        play_target = file_path if movie.get("source") == "local" else self.build_proxy_play_url(movie_path, episode_index)
+        token = secrets.token_hex(12)
+
+        with self._vlc_lock:
+            self._stop_existing_vlc_session_locked()
+
+        cmd = [
+            vlc_path,
+            "--extraintf=http",
+            "--http-host=127.0.0.1",
+            f"--http-port={http_port}",
+            f"--http-password={http_password}",
+            "--no-video-title-show",
+            "--one-instance",
+            "--one-instance-when-started-from-file",
+            play_target,
+        ]
+
+        process = subprocess.Popen(cmd, shell=False)
+        session: dict[str, Any] = {
+            "token": token,
+            "active": True,
+            "player": "vlc_controlled",
+            "movie_path": movie_path,
+            "resolved_path": file_path,
+            "play_url": play_target,
+            "title": movie.get("title") or movie.get("name") or os.path.basename(file_path),
+            "display_title": movie.get("title") or movie.get("name") or os.path.basename(file_path),
+            "source": movie.get("source"),
+            "remote_provider": movie.get("remote_provider"),
+            "is_series": bool(movie.get("is_series")),
+            "episode_index": int(episode_index or 0),
+            "http_port": http_port,
+            "http_password": http_password,
+            "state": "launching",
+            "progress_seconds": 0,
+            "duration_seconds": 0,
+            "position": 0.0,
+            "volume": 0,
+            "recent_marked": False,
+            "completed": False,
+            "started_at": int(time.time()),
+            "updated_at": int(time.time()),
+            "process": process,
+        }
+
+        with self._vlc_lock:
+            self._vlc_session = session
+            self._persist_vlc_session_locked()
+            self._vlc_monitor_thread = threading.Thread(
+                target=self._vlc_monitor_loop,
+                args=(token,),
+                name="moviepop-vlc-monitor",
+                daemon=True,
+            )
+            self._vlc_monitor_thread.start()
+
+        return self.get_vlc_controlled_session()
+
+    def get_vlc_controlled_session(self) -> dict[str, Any]:
+        with self._vlc_lock:
+            session = self._vlc_session
+            if not session:
+                return {"active": False}
+            process = session.get("process")
+            if process and process.poll() is not None:
+                session["active"] = False
+                self._persist_vlc_session_locked()
+            active = bool(session.get("active")) and not (process and process.poll() is not None and session.get("state") == "stopped")
+            return {
+                "active": active,
+                "player": session.get("player"),
+                "movie_path": session.get("movie_path"),
+                "resolved_path": session.get("resolved_path"),
+                "play_url": session.get("play_url"),
+                "title": session.get("title"),
+                "display_title": session.get("display_title") or session.get("title"),
+                "source": session.get("source"),
+                "is_series": bool(session.get("is_series")),
+                "episode_index": session.get("episode_index", 0),
+                "state": session.get("state", "unknown"),
+                "progress_seconds": int(session.get("progress_seconds") or 0),
+                "duration_seconds": int(session.get("duration_seconds") or 0),
+                "position": float(session.get("position") or 0),
+                "volume": int(session.get("volume") or 0),
+                "completed": bool(session.get("completed")),
+                "started_at": int(session.get("started_at") or 0),
+                "updated_at": int(session.get("updated_at") or 0),
+            }
+
+    def control_vlc_controlled_session(self, action: str, value: str | None = None) -> dict[str, Any]:
+        with self._vlc_lock:
+            session = self._vlc_session
+            if not session:
+                raise ValueError("当前没有正在运行的 VLC 受控会话。")
+            state = str(session.get("state") or "")
+            normalized = str(action or "").strip().lower()
+            if normalized == "toggle":
+                status = self._send_vlc_http_command(session, "pl_pause")
+            elif normalized == "pause":
+                status = self._send_vlc_http_command(session, "pl_pause") if state != "paused" else self._fetch_vlc_status(session)
+            elif normalized == "resume":
+                status = self._send_vlc_http_command(session, "pl_pause") if state == "paused" else self._fetch_vlc_status(session)
+            elif normalized == "stop":
+                status = self._send_vlc_http_command(session, "pl_stop")
+                session["active"] = False
+            elif normalized == "seek":
+                if value is None:
+                    raise ValueError("seek 命令缺少目标位置。")
+                status = self._send_vlc_http_command(session, "seek", value)
+            elif normalized == "seek_forward":
+                step = str(value or "+15S")
+                status = self._send_vlc_http_command(session, "seek", step if step.startswith("+") else f"+{step}")
+            elif normalized == "seek_backward":
+                step = str(value or "-15S")
+                status = self._send_vlc_http_command(session, "seek", step if step.startswith("-") else f"-{step}")
+            else:
+                raise ValueError("不支持的 VLC 控制命令。")
+            self._merge_vlc_session_status(session, status)
+            self._sync_vlc_playback_state(session)
+        return self.get_vlc_controlled_session()
+
+    def stop_vlc_controlled_session(self) -> dict[str, Any]:
+        with self._vlc_lock:
+            self._stop_existing_vlc_session_locked()
+        return {"success": True}
 
     def play(self, movie_path: str, episode_index: int = 0) -> dict[str, Any]:
         movie = self.library_service.get_movie(movie_path)

@@ -2,7 +2,7 @@ import json
 from pathlib import Path
 
 from config.app_config import AppConfig
-from utils.filename_parser import merge_series_videos
+from utils.filename_parser import merge_series_videos, parse_video_filename
 from utils.logger import get_logger
 
 logger = get_logger()
@@ -77,9 +77,37 @@ class LocalVideoLibraryManager:
     def _load_cache(self):
         try:
             with open(LocalVideoLibraryManager._cache_file, "r", encoding="utf-8") as file:
-                return json.load(file)
+                data = json.load(file)
+            normalized = []
+            for item in data if isinstance(data, list) else []:
+                if not isinstance(item, dict):
+                    continue
+                normalized.append(self._rehydrate_cached_fields(dict(item)))
+            return normalized
         except Exception:  # noqa: BLE001
             return []
+
+    def _rehydrate_cached_fields(self, movie: dict):
+        path = str(movie.get("path") or "").strip()
+        if not path:
+            return movie
+        parsed = parse_video_filename(path)
+        for key in (
+            "category",
+            "media_type",
+            "franchise",
+            "sort_bucket",
+            "sort_title",
+            "release_group",
+            "resolution",
+            "codec",
+            "subtitle_info",
+            "audio_info",
+            "year_hint",
+        ):
+            if not movie.get(key) and parsed.get(key) not in (None, ""):
+                movie[key] = parsed.get(key)
+        return movie
 
     def _save_cache(self, movie_list):
         try:
@@ -104,6 +132,17 @@ class LocalVideoLibraryManager:
                         "path",
                         "cover_path",
                         "season",
+                        "category",
+                        "media_type",
+                        "franchise",
+                        "sort_bucket",
+                        "sort_title",
+                        "release_group",
+                        "resolution",
+                        "codec",
+                        "subtitle_info",
+                        "audio_info",
+                        "year_hint",
                     ]
                 }
                 cache_data.append(cache_item)

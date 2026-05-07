@@ -10,13 +10,13 @@ from urllib.parse import quote, urljoin
 
 from fastapi import Body, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, Response, StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 from starlette.background import BackgroundTask
 from fastapi.staticfiles import StaticFiles
-from starlette.middleware.base import BaseHTTPMiddleware
 from pydantic import BaseModel, Field
 
 from backend.jobs import job_manager
+from backend.runtime_state import get_runtime_state
 from backend.services import (
     ConfigService,
     LibraryService,
@@ -34,8 +34,6 @@ from utils.logger import get_logger
 logger = get_logger()
 
 BASE_DIR = Path(__file__).resolve().parent.parent
-# Frontend is split into a sibling directory in the separated layout.
-FRONTEND_DIR = BASE_DIR.parent / "MoviePop-front"
 COVERS_DIR = BASE_DIR / "covers"
 
 config_service = ConfigService()
@@ -56,6 +54,7 @@ async def lifespan(app: FastAPI):
         except Exception as exc:
             logger.warning("OpenList 自动启动失败: %s", exc)
     yield
+    playback_service.stop_vlc_controlled_session()
     openlist_manager.stop()
 
 # \u6d41\u5a92\u4f53 URL \u7f13\u5b58
@@ -72,22 +71,8 @@ app.add_middleware(
 )
 
 
-class NoCacheMiddleware(BaseHTTPMiddleware):
-    async def dispatch(self, request, call_next):
-        response = await call_next(request)
-        if request.url.path.startswith("/assets/"):
-            response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
-            response.headers["Pragma"] = "no-cache"
-            response.headers["Expires"] = "0"
-        return response
-
-
-app.add_middleware(NoCacheMiddleware)
-
 if COVERS_DIR.exists():
     app.mount("/covers", StaticFiles(directory=str(COVERS_DIR)), name="covers")
-if FRONTEND_DIR.exists():
-    app.mount("/assets", StaticFiles(directory=str(FRONTEND_DIR)), name="assets")
 
 
 class ConfigPayload(BaseModel):
@@ -123,6 +108,11 @@ class MoviePathPayload(BaseModel):
 
 class PlayPayload(MoviePathPayload):
     episode_index: int = 0
+
+
+class VLCControlPayload(BaseModel):
+    action: str
+    value: str | None = None
 
 
 class UpdateMoviePayload(MoviePathPayload):
@@ -164,10 +154,6 @@ class OpenListStoragePayload(BaseModel):
     addition: dict[str, Any] = Field(default_factory=dict)
     order: int = 0
     cache_expiration: int = 30
-
-
-def frontend_index() -> FileResponse:
-    return FileResponse(FRONTEND_DIR / "index.html")
 
 
 def _build_stream_client(provider: str | None, movie_path: str):
@@ -323,11 +309,6 @@ def _proxy_upstream_response(
     )
 
 
-@app.get("/")
-def root() -> FileResponse:
-    return frontend_index()
-
-
 @app.get("/api/bootstrap")
 def bootstrap() -> dict[str, Any]:
     config = config_service.get_public_config()
@@ -335,12 +316,18 @@ def bootstrap() -> dict[str, Any]:
         "config": config,
         "stats": library_service.get_stats(),
         "has_library": config["has_any_library"],
+        "player_runtime": get_runtime_state(),
     }
 
 
 @app.get("/api/config")
 def get_config() -> dict[str, Any]:
     return config_service.get_public_config()
+
+
+@app.get("/api/player/runtime")
+def get_player_runtime() -> dict[str, Any]:
+    return get_runtime_state()
 
 
 @app.put("/api/config")
@@ -535,6 +522,34 @@ def play_movie(payload: PlayPayload) -> dict[str, Any]:
         return {"success": True, "result": result, "stats": library_service.get_stats()}
     except (ValueError, FileNotFoundError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/vlc/session/start")
+def start_vlc_controlled_session(payload: PlayPayload) -> dict[str, Any]:
+    try:
+        result = playback_service.start_vlc_controlled_playback(payload.movie_path, payload.episode_index)
+        return {"success": True, "result": result, "stats": library_service.get_stats()}
+    except (ValueError, FileNotFoundError, RuntimeError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/vlc/session")
+def get_vlc_controlled_session() -> dict[str, Any]:
+    return {"success": True, "result": playback_service.get_vlc_controlled_session()}
+
+
+@app.post("/api/vlc/session/command")
+def control_vlc_controlled_session(payload: VLCControlPayload) -> dict[str, Any]:
+    try:
+        result = playback_service.control_vlc_controlled_session(payload.action, payload.value)
+        return {"success": True, "result": result}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.delete("/api/vlc/session")
+def stop_vlc_controlled_session() -> dict[str, Any]:
+    return playback_service.stop_vlc_controlled_session()
 
 
 @app.get("/api/stream/playlist.m3u8")

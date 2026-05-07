@@ -73,6 +73,38 @@
     </div>
   </div>
 
+  <div class="modal hidden" id="playerModal">
+    <div class="modal-backdrop" data-close="playerModal"></div>
+    <div class="modal-panel player-panel">
+      <button class="modal-close" data-close="playerModal">鍏抽棴</button>
+      <div class="inline-player-shell vlc-control-shell">
+        <div class="inline-player-head">
+          <div>
+            <span class="section-eyebrow">鍐呯疆鎾斁鍣?/span>
+            <h3 id="inlinePlayerTitle">姝ｅ湪鍑嗗鎾斁</h3>
+            <p id="inlinePlayerMeta">搴旂敤鍐呰褰曟挱鏀捐繘搴﹀拰瑙傚奖缁熻</p>
+          </div>
+          <div class="inline-player-status" id="inlinePlayerStatus"></div>
+        </div>
+        <div class="inline-player-stage vlc-control-stage">
+          <div class="vlc-stage-copy">
+            <div class="vlc-stage-title" id="vlcSessionState">等待启动</div>
+            <div class="vlc-stage-meta" id="vlcSessionProgress">0:00 / 0:00</div>
+          </div>
+          <div class="vlc-progress-track">
+            <span id="vlcSessionBar"></span>
+          </div>
+          <div class="vlc-control-actions">
+            <button class="ghost-btn" type="button" data-vlc-command="seek_backward">后退 15 秒</button>
+            <button class="primary-btn" type="button" data-vlc-command="toggle" id="vlcToggleBtn">暂停 / 继续</button>
+            <button class="ghost-btn" type="button" data-vlc-command="seek_forward">前进 15 秒</button>
+            <button class="ghost-btn danger" type="button" data-vlc-command="stop">停止播放</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <div class="modal hidden" id="editModal">
     <div class="modal-backdrop" data-close="editModal"></div>
     <div class="modal-panel compact-panel">

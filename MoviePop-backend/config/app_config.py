@@ -59,6 +59,9 @@ class AppConfig:
         self.INTERFACE_THEME = self.UI_THEME
         self.INTERFACE_LANGUAGE = "zh"
 
+        self.SERVER_PORT = 8765
+        self.NGINX_PORT = 80
+
         self.OPENLIST_ENABLED = False
         self.OPENLIST_PORT = 5244
         self.OPENLIST_ADMIN_PASSWORD = ""
@@ -100,6 +103,10 @@ class AppConfig:
             "vlc_path": self.VLC_PATH.strip(),
             "default_player": self.DEFAULT_PLAYER.strip(),
         }
+        config["server"] = {
+            "port": self.SERVER_PORT,
+            "nginx_port": self.NGINX_PORT,
+        }
         config["general"] = {
             "video_formats": ",".join(self.VIDEO_FORMATS),
             "enable_auto_scrape": self.ENABLE_AUTO_SCRAPE,
@@ -140,6 +147,10 @@ class AppConfig:
         try:
             config = configparser.ConfigParser(interpolation=None)
             config.read(self.CONFIG_FILE, encoding="utf-8")
+
+            if "server" in config:
+                self.SERVER_PORT = config["server"].getint("port", 8765)
+                self.NGINX_PORT = config["server"].getint("nginx_port", 80)
 
             if "webdav" in config:
                 webdav_config = config["webdav"]
@@ -208,7 +219,9 @@ class AppConfig:
                 self.CLICKHOUSE_DATABASE = analytics_config.get("clickhouse_database", self.CLICKHOUSE_DATABASE).strip() or "moviepop"
 
             self._auto_detect_players()
-            if self.DEFAULT_PLAYER not in {"potplayer", "vlc"}:
+            if self.DEFAULT_PLAYER == "builtin":
+                self.DEFAULT_PLAYER = "vlc_controlled"
+            if self.DEFAULT_PLAYER not in {"vlc_controlled", "libvlc_desktop", "potplayer", "vlc"}:
                 self.DEFAULT_PLAYER = "potplayer"
             self.SCRAPE_SOURCE = "auto"
             self.UI_THEME = self.normalize_theme(self.UI_THEME)

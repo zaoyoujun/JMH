@@ -7,7 +7,7 @@ from core.remote_source import (
     make_remote_client,
     make_remote_provider_config,
 )
-from utils.filename_parser import merge_series_videos
+from utils.filename_parser import merge_series_videos, parse_video_filename
 from utils.logger import get_logger
 
 logger = get_logger()
@@ -115,10 +115,33 @@ class VideoLibraryManager:
                 cache_item = dict(item)
                 cache_item["remote_provider"] = provider
                 cache_item["source_label"] = cache_item.get("source_label") or get_remote_provider_label(provider)
+                cache_item = self._rehydrate_cached_fields(cache_item)
                 normalized.append(cache_item)
             return normalized
         except Exception:  # noqa: BLE001
             return []
+
+    def _rehydrate_cached_fields(self, movie: dict):
+        path = str(movie.get("path") or "").strip()
+        if not path:
+            return movie
+        parsed = parse_video_filename(path)
+        for key in (
+            "category",
+            "media_type",
+            "franchise",
+            "sort_bucket",
+            "sort_title",
+            "release_group",
+            "resolution",
+            "codec",
+            "subtitle_info",
+            "audio_info",
+            "year_hint",
+        ):
+            if not movie.get(key) and parsed.get(key) not in (None, ""):
+                movie[key] = parsed.get(key)
+        return movie
 
     def _save_cache(self, movie_list):
         try:
@@ -145,6 +168,17 @@ class VideoLibraryManager:
                         "season",
                         "remote_provider",
                         "source_label",
+                        "category",
+                        "media_type",
+                        "franchise",
+                        "sort_bucket",
+                        "sort_title",
+                        "release_group",
+                        "resolution",
+                        "codec",
+                        "subtitle_info",
+                        "audio_info",
+                        "year_hint",
                     ]
                 }
                 cache_data.append(cache_item)

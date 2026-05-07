@@ -34,10 +34,20 @@ const state = {
   allTags: {},
   tagInputValue: "",
   reportData: null,
+  playerRuntime: null,
   openlistStatus: null,
   openlistStorages: [],
   openlistDrivers: [],
   openlistDriverForm: null,
+  inlinePlayer: {
+    moviePath: "",
+    resolvedPath: "",
+    title: "",
+    playUrl: "",
+    episodeIndex: 0,
+    hasStarted: false,
+    lastSavedSecond: 0,
+  },
 };
 
 // 视图元数据
@@ -72,6 +82,9 @@ const elements = {
 
 let heroCarouselTimer = null;
 let recommendCarouselTimer = null;
+let inlinePlayerSaveTimer = null;
+let inlinePlayerResumeTimer = null;
+let inlinePlayerRecoveredOnce = false;
 
 const _themeOptionsBase = [
   { value: "amber", label: "暖光" },
@@ -210,11 +223,23 @@ document.addEventListener("DOMContentLoaded", init);
 
 async function init() {
   bindGlobalEvents();
+  const playerCloseBtn = document.querySelector("#playerModal .modal-close");
+  if (playerCloseBtn) playerCloseBtn.textContent = "关闭";
+  const playerKicker = document.querySelector("#playerModal .section-eyebrow");
+  if (playerKicker) playerKicker.textContent = "VLC 受控模式";
+  const playerTitle = document.getElementById("inlinePlayerTitle");
+  if (playerTitle) playerTitle.textContent = "正在连接 VLC";
+  const playerMeta = document.getElementById("inlinePlayerMeta");
+  if (playerMeta) playerMeta.textContent = "由应用接管播放进度、最近播放和观影统计";
   await loadBootstrap();
   await loadCurrentView();
 }
 
 function bindGlobalEvents() {
+  window.addEventListener("beforeunload", () => {
+    closeInlinePlayer({ refresh: false }).catch(() => {});
+  });
+
   elements.navList.addEventListener("click", async (event) => {
     const button = event.target.closest(".nav-item");
     if (!button) return;
@@ -293,6 +318,12 @@ function bindGlobalEvents() {
     const playBtn = event.target.closest("[data-play-movie]");
     if (playBtn) {
       await playMovie(playBtn.dataset.playMovie, Number(playBtn.dataset.episodeIndex || 0));
+      return;
+    }
+
+    const vlcCommandBtn = event.target.closest("[data-vlc-command]");
+    if (vlcCommandBtn) {
+      await sendInlinePlayerCommand(vlcCommandBtn.dataset.vlcCommand);
       return;
     }
 
@@ -591,10 +622,12 @@ async function loadBootstrap() {
   }
   state.config = payload.config;
   state.stats = payload.stats;
+  state.playerRuntime = payload.player_runtime || null;
   state.webdavDirs = new Set(normalizeRemoteDirSetItems(payload.config.saved_mount_dirs || []));
   state.localDirs = new Set(payload.config.local_mount_dirs || []);
   applyTheme(payload.config.ui_theme || payload.config.interface_theme);
   updateSidebarStatus();
+  await recoverInlinePlayerSession({ silent: false });
   render();
 }
 
@@ -921,6 +954,8 @@ function buildGroupedSeries(groupItems) {
   const seasons = [...groupItems].sort((left, right) => Number(left.season || 0) - Number(right.season || 0));
   const primary = seasons.find((item) => item.cover_url || item.intro) || seasons[0];
   const tags = [...new Set(seasons.flatMap((item) => (Array.isArray(item.tags) ? item.tags : [])))];
+  const inferredTags = [...new Set(seasons.flatMap((item) => (Array.isArray(item.inferred_tags) ? item.inferred_tags : [])))];
+  const manualTags = [...new Set(seasons.flatMap((item) => (Array.isArray(item.manual_tags) ? item.manual_tags : [])))];
   const totalEpisodes = seasons.reduce(
     (sum, item) => sum + Number(item.episode_count || item.episode_files?.length || 0),
     0
@@ -950,6 +985,12 @@ function buildGroupedSeries(groupItems) {
     is_favorite: seasons.some((item) => item.is_favorite),
     source_label: labels.join(" / ") || primary.source_label || "媒体库",
     tags,
+    manual_tags: manualTags,
+    inferred_tags: inferredTags,
+    category: primary.category || seasons.find((item) => item.category)?.category || "",
+    franchise: primary.franchise || seasons.find((item) => item.franchise)?.franchise || "",
+    sort_bucket: Number(primary.sort_bucket || seasons.find((item) => item.sort_bucket)?.sort_bucket || 9),
+    sort_title: primary.sort_title || primary.title || primary.name || "",
     path: primary.path,
     playback,
     resume_path: latestPlaybackSeason?.path || primary.path,
@@ -1008,6 +1049,15 @@ function syncSelectedMovie() {
 function formatPlaybackText(playback) {
   if (!playback?.has_progress) return "";
   return `${"已观看"} ${playback.percent}%`;
+}
+
+function formatDuration(seconds) {
+  const total = Math.max(0, Math.floor(Number(seconds) || 0));
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  const remain = total % 60;
+  if (hours > 0) return `${hours}:${String(minutes).padStart(2, "0")}:${String(remain).padStart(2, "0")}`;
+  return `${minutes}:${String(remain).padStart(2, "0")}`;
 }
 
 function formatResumeHint(movie) {
@@ -2371,8 +2421,8 @@ function renderSettingsOverview(config) {
     },
     {
       label: "默认播放器",
-      value: config.default_player === "vlc" ? "VLC" : "PotPlayer",
-      hint: "用于外部播放影片",
+      value: config.default_player === "vlc_controlled" || config.default_player === "builtin" ? "VLC 受控模式" : config.default_player === "vlc" ? "VLC" : "PotPlayer",
+      hint: config.default_player === "vlc_controlled" || config.default_player === "builtin" ? "通过 VLC 回传进度、完播和统计" : "适合继续使用外部播放器",
       ready: true,
     },
   ];
@@ -2570,12 +2620,54 @@ function renderMediaSourceTab(config) {
 
 function renderPlayerTab(config) {
   const localDirs = [...state.localDirs];
+  const runtime = state.playerRuntime || {};
+  const runtimeMode = runtime.desktop_mode ? "桌面模式" : "浏览器模式";
+  const runtimeStatusClass = runtime.embed_ready ? "ready" : "pending";
+  const runtimeSummary = runtime.embed_ready
+    ? "已具备 libVLC 原型条件，可以进入真嵌入验证。"
+    : (Array.isArray(runtime.reasons) && runtime.reasons.length ? runtime.reasons[0] : "当前先继续使用 VLC 受控模式更稳。");
+  const runtimeReasonList = Array.isArray(runtime.reasons) ? runtime.reasons : [];
 
   return `
     <div class="settings-section-head">
       <span>${"播放与扫描"}</span>
       <h3>${"本机怎么扫描，怎么播放"}</h3>
       <p>${"如果你既有网盘也有本地硬盘，这里建议一起配好，后面就能统一出现在片库里。"}</p>
+    </div>
+
+    <div class="settings-card">
+      <div class="settings-card-head">
+        <div>
+          <h4>${"libVLC 原型状态"}</h4>
+        </div>
+        <p>${"这里会告诉你当前运行方式是否已经具备“真正内嵌 VLC”所需的条件。"}</p>
+      </div>
+      <div class="runtime-status-grid">
+        <article class="runtime-status-card ${runtimeStatusClass}">
+          <span>${"当前运行方式"}</span>
+          <strong>${escapeHtml(runtimeMode)}</strong>
+          <small>${escapeHtml(runtime.runtime === "pywebview" ? "通过 pywebview 桌面壳启动" : "通过浏览器窗口启动")}</small>
+        </article>
+        <article class="runtime-status-card ${runtime.pywebview_available ? "ready" : "pending"}">
+          <span>${"pywebview"}</span>
+          <strong>${runtime.pywebview_available ? "已安装" : "未安装"}</strong>
+          <small>${"桌面窗口和原生句柄来自这一层。"}</small>
+        </article>
+        <article class="runtime-status-card ${runtime.python_vlc_available ? "ready" : "pending"}">
+          <span>${"python-vlc"}</span>
+          <strong>${runtime.python_vlc_available ? "已安装" : "未安装"}</strong>
+          <small>${"libVLC 真嵌入原型依赖这个 Python 绑定。"}</small>
+        </article>
+      </div>
+      <div class="settings-inline-note runtime-note">
+        <strong>${runtime.embed_ready ? "可以开始 libVLC 原型" : "当前还不建议切到 libVLC"}</strong>
+        <span>${escapeHtml(runtimeSummary)}</span>
+      </div>
+      ${runtimeReasonList.length ? `
+        <div class="runtime-reason-list">
+          ${runtimeReasonList.map((reason) => `<span>${escapeHtml(reason)}</span>`).join("")}
+        </div>
+      ` : ""}
     </div>
 
     <div class="settings-card">
@@ -2587,9 +2679,14 @@ function renderPlayerTab(config) {
         <label>
           <span>${"默认播放器"}</span>
           <select name="default_player">
+            <option value="vlc_controlled" ${config.default_player === "vlc_controlled" || config.default_player === "builtin" ? "selected" : ""}>VLC 受控模式</option>
             <option value="potplayer" ${config.default_player === "potplayer" ? "selected" : ""}>PotPlayer</option>
             <option value="vlc" ${config.default_player === "vlc" ? "selected" : ""}>VLC</option>
           </select>
+        </label>
+        <label class="full-width">
+          <span>${"播放模式说明"}</span>
+          <div class="settings-inline-note">${"VLC 受控模式会由应用接管 VLC 的播放状态、最近播放、进度同步、完播统计和画像数据。`PotPlayer` 与普通 `VLC` 仍可作为纯外部播放器使用。"}</div>
         </label>
         <label>
           <span>${"PotPlayer 路径"}</span>
@@ -3521,7 +3618,7 @@ function getSettingsPayload() {
       local_mount_dirs: [...state.localDirs],
       potplayer_path: state.config?.potplayer_path || "",
       vlc_path: state.config?.vlc_path || "",
-      default_player: state.config?.default_player || "potplayer",
+      default_player: state.config?.default_player === "builtin" ? "vlc_controlled" : (state.config?.default_player || "potplayer"),
       video_formats: state.config?.video_formats || [".mp4", ".mkv", ".avi", ".mov", ".wmv", ".flv", ".rmvb", ".ts"],
       enable_auto_scrape: state.config?.enable_auto_scrape !== false,
       scrape_source: state.config?.scrape_source || "auto",
@@ -3571,7 +3668,7 @@ function getSettingsPayload() {
     local_mount_dirs: [...state.localDirs],
     potplayer_path: String(formData.get("potplayer_path") || "").trim(),
     vlc_path: String(formData.get("vlc_path") || "").trim(),
-    default_player: String(formData.get("default_player") || "potplayer"),
+    default_player: String(formData.get("default_player") || "potplayer").trim() || "potplayer",
     video_formats: videoFormats,
     enable_auto_scrape: formData.get("enable_auto_scrape") === "true",
     scrape_source: "auto",
@@ -3627,19 +3724,6 @@ async function openDetail(movie) {
   state.selectedEpisode = 0;
   renderDetail();
   openModal("detailModal");
-
-  const recentPath = state.selectedSeasonPath || movie.path;
-  const payload = await guarded(() =>
-    api("/api/movies/recent", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ movie_path: recentPath }),
-    })
-  );
-  if (payload) {
-    state.stats = payload.stats;
-    renderStats();
-  }
 }
 
 function renderDetail() {
@@ -4224,6 +4308,11 @@ function renderCandidateModal() {
 }
 
 async function playMovie(moviePath, episodeIndex = 0) {
+  if ((state.config?.default_player || "potplayer") === "vlc_controlled" || (state.config?.default_player || "potplayer") === "builtin") {
+    await openInlinePlayer(moviePath, episodeIndex);
+    return;
+  }
+
   const payload = await guarded(() =>
     api("/api/movies/play", {
       method: "POST",
@@ -4235,6 +4324,188 @@ async function playMovie(moviePath, episodeIndex = 0) {
 
   showToast("播放器已启动", "success");
   await loadCurrentView();
+}
+
+function getInlinePlayerElements() {
+  return {
+    modal: document.getElementById("playerModal"),
+    title: document.getElementById("inlinePlayerTitle"),
+    meta: document.getElementById("inlinePlayerMeta"),
+    status: document.getElementById("inlinePlayerStatus"),
+    state: document.getElementById("vlcSessionState"),
+    progress: document.getElementById("vlcSessionProgress"),
+    bar: document.getElementById("vlcSessionBar"),
+    toggle: document.getElementById("vlcToggleBtn"),
+  };
+}
+
+function resetInlinePlayerState() {
+  state.inlinePlayer = {
+    moviePath: "",
+    resolvedPath: "",
+    title: "",
+    playUrl: "",
+    episodeIndex: 0,
+    hasStarted: false,
+    lastSavedSecond: 0,
+  };
+}
+
+function hydrateInlinePlayerState(session) {
+  resetInlinePlayerState();
+  state.inlinePlayer.moviePath = String(session?.movie_path || "");
+  state.inlinePlayer.resolvedPath = String(session?.resolved_path || "");
+  state.inlinePlayer.title = String(session?.display_title || session?.title || "");
+  state.inlinePlayer.playUrl = String(session?.play_url || "");
+  state.inlinePlayer.episodeIndex = Number(session?.episode_index || 0);
+  state.inlinePlayer.hasStarted = !!session?.active;
+}
+
+function stopInlinePlayerPolling() {
+  window.clearInterval(inlinePlayerSaveTimer);
+  inlinePlayerSaveTimer = null;
+}
+
+function startInlinePlayerPolling() {
+  stopInlinePlayerPolling();
+  inlinePlayerSaveTimer = window.setInterval(() => {
+    pollInlinePlayerSession().catch(() => {});
+  }, 2500);
+}
+
+function formatVlcStateLabel(rawState) {
+  const value = String(rawState || "").trim().toLowerCase();
+  if (value === "playing") return "正在播放";
+  if (value === "paused") return "已暂停";
+  if (value === "opening") return "正在打开媒体";
+  if (value === "stopped") return "已停止";
+  return "等待 VLC 响应";
+}
+
+function renderInlinePlayerSession(session) {
+  const { title, meta, status, state: stateEl, progress, bar, toggle } = getInlinePlayerElements();
+  const active = !!session?.active;
+  const duration = Number(session?.duration_seconds || 0);
+  const current = Number(session?.progress_seconds || 0);
+  const percent = duration > 0 ? Math.max(0, Math.min(100, (current / duration) * 100)) : 0;
+  if (title) title.textContent = session?.display_title || session?.title || "VLC 受控模式";
+  if (meta) meta.textContent = session?.is_series ? `VLC 受控会话 · 第 ${Number(session.episode_index || 0) + 1} 集` : "VLC 受控会话";
+  if (status) status.textContent = active ? "应用正在同步 VLC 的状态、进度和观影统计。" : "当前没有正在运行的 VLC 受控会话。";
+  if (stateEl) stateEl.textContent = formatVlcStateLabel(session?.state);
+  if (progress) progress.textContent = `${formatDuration(current)} / ${formatDuration(duration)}`;
+  if (bar) bar.style.width = `${percent}%`;
+  if (toggle) toggle.textContent = String(session?.state || "").toLowerCase() === "paused" ? "继续播放" : "暂停播放";
+}
+
+async function pollInlinePlayerSession() {
+  try {
+    const payload = await api("/api/vlc/session");
+    if (!payload?.result) return;
+    renderInlinePlayerSession(payload.result);
+    if (!payload.result.active) {
+      stopInlinePlayerPolling();
+      resetInlinePlayerState();
+      await loadCurrentView();
+    }
+  } catch (error) {
+    stopInlinePlayerPolling();
+  }
+}
+
+async function sendInlinePlayerCommand(action, value = null) {
+  const payload = await guarded(() =>
+    api("/api/vlc/session/command", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action, value }),
+    })
+  );
+  if (payload?.result) {
+    renderInlinePlayerSession(payload.result);
+    if (action === "stop") {
+      stopInlinePlayerPolling();
+      resetInlinePlayerState();
+      closeModal("playerModal");
+      await loadCurrentView();
+    }
+  }
+}
+
+async function recoverInlinePlayerSession({ silent = true } = {}) {
+  try {
+    const payload = await api("/api/vlc/session");
+    const session = payload?.result;
+    if (!session?.active) {
+      stopInlinePlayerPolling();
+      resetInlinePlayerState();
+      return null;
+    }
+    hydrateInlinePlayerState(session);
+    if (document.getElementById("playerModal") && !document.getElementById("playerModal").classList.contains("hidden")) {
+      renderInlinePlayerSession(session);
+      startInlinePlayerPolling();
+    }
+    if (!silent && !inlinePlayerRecoveredOnce) {
+      showToast("已恢复 VLC 受控会话，进度统计会继续同步", "info");
+      inlinePlayerRecoveredOnce = true;
+    }
+    return session;
+  } catch (error) {
+    stopInlinePlayerPolling();
+    return null;
+  }
+}
+
+async function openInlinePlayer(moviePath, episodeIndex = 0) {
+  try {
+    const current = await api("/api/vlc/session");
+    if (current?.result?.active && current.result.movie_path === moviePath && Number(current.result.episode_index || 0) === Number(episodeIndex || 0)) {
+      hydrateInlinePlayerState(current.result);
+      openModal("playerModal");
+      renderInlinePlayerSession(current.result);
+      startInlinePlayerPolling();
+      return;
+    }
+  } catch (error) {
+    // ignore and fall through to start a new controlled session
+  }
+
+  const payload = await guarded(() =>
+    api("/api/vlc/session/start", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ movie_path: moviePath, episode_index: episodeIndex }),
+    })
+  );
+  if (!payload?.result) return;
+
+  const { modal } = getInlinePlayerElements();
+  if (!modal) {
+    showToast("VLC 控制台界面不可用", "error");
+    return;
+  }
+
+  hydrateInlinePlayerState(payload.result);
+  openModal("playerModal");
+  renderInlinePlayerSession(payload.result);
+  startInlinePlayerPolling();
+  if (payload?.stats) {
+    state.stats = payload.stats;
+    renderStats();
+  }
+  showToast("已切换到 VLC 受控模式", "success");
+}
+
+async function closeInlinePlayer({ refresh = true } = {}) {
+  const { status } = getInlinePlayerElements();
+  stopInlinePlayerPolling();
+  window.clearTimeout(inlinePlayerResumeTimer);
+  inlinePlayerResumeTimer = null;
+  if (status) status.textContent = "";
+  resetInlinePlayerState();
+  if (refresh) {
+    await loadCurrentView();
+  }
 }
 
 async function savePlaybackProgress(moviePath, progress, duration) {
@@ -4429,6 +4700,7 @@ function openModal(id) {
 }
 
 function closeModal(id) {
+  if (id === "playerModal") closeInlinePlayer({ refresh: false }).catch(() => {});
   document.getElementById(id).classList.add("hidden");
 }
 

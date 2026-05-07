@@ -8,7 +8,7 @@
 - **元数据刮削**：从 TMDB、豆瓣、动漫科自动获取封面、简介、年份
 - **智能推荐系统**：基于用户画像的内容相似度推荐 + 协同过滤 + 多平台外部推荐
 - **ECharts 数据可视化大屏**：饼图、折线图、条形图、雷达图交互式观影分析
-- **播放进度同步**：支持 PotPlayer / VLC，跨设备播放进度记录
+- **播放进度同步**：支持 PotPlayer / VLC / VLC 受控模式，跨设备播放进度记录
 - **标签系统**：自动标签生成 + 手动标签管理
 - **观影报告**：类型分布、年代趋势、完播统计、近期动态
 - **多主题界面**：amber / graphite / forest / coast 四种配色
@@ -38,7 +38,8 @@ JMH-split/
 │   │   ├── recommendations.py # 推荐引擎
 │   │   ├── analytics.py     # 数据分析 ETL
 │   │   ├── warehouse.py     # ClickHouse 数据仓库
-│   │   └── jobs.py          # 后台任务管理
+│   │   ├── jobs.py          # 后台任务管理
+│   │   └── runtime_state.py # 播放器运行时状态
 │   ├── config/
 │   │   └── app_config.py    # 全局配置
 │   ├── core/
@@ -53,10 +54,11 @@ JMH-split/
 │   │   ├── filename_parser.py # 文件名解析
 │   │   └── logger.py        # 日志配置
 │   ├── requirements.txt     # Python 依赖
-│   └── run_backend.py       # 启动入口
+│   └── run_api.py           # 启动入口（含 nginx 反向代理）
+├── nginx-1.30.0/            # 内置 Nginx
 ├── API.md                   # API 接口文档
 ├── README.md                # 项目说明
-└── start.bat                # Windows 启动脚本
+└── start_nginx.bat          # Windows 启动脚本
 ```
 
 ## 快速开始
@@ -77,13 +79,13 @@ cd JMH
 cd MoviePop-backend
 pip install -r requirements.txt
 
-# 3. 启动服务
-python run_backend.py
+# 3. 启动服务（含 Nginx 反向代理）
+python run_api.py
 ```
 
-或直接双击根目录的 `start.bat`。
+或直接双击根目录的 `start_nginx.bat`。
 
-启动后浏览器自动打开 `http://127.0.0.1:8765`。
+启动后浏览器自动打开 `http://localhost:8088`（Nginx 代理端口，可在 config.ini 中修改 `nginx_port`）。
 
 ### 首次配置
 
@@ -99,6 +101,13 @@ python run_backend.py
 
 ## 部署说明
 
-- 后端默认从同级 `MoviePop-front` 目录加载前端资源
-- 如需独立部署，将前端挂到 Nginx，`/api` 和 `/covers` 反向代理到后端
-- 可选启用 ClickHouse 数据仓库，用于 OLAP 多维分析
+项目采用 Nginx 反向代理架构：
+
+- `run_api.py` 启动时自动生成 `nginx.conf` 并启动内置 Nginx（`nginx-1.30.0/`）
+- Nginx 监听 `nginx_port`（默认 8088），提供前端静态资源和 API 反向代理
+- 后端 API 监听 `port`（默认 8765），通过 Nginx 代理访问
+- 端口配置在 `MoviePop-backend/data/config.ini` 的 `[server]` 段
+
+如需独立部署，将前端挂到 Nginx，`/api` 和 `/covers` 反向代理到后端 API 端口。
+
+可选启用 ClickHouse 数据仓库，用于 OLAP 多维分析。
