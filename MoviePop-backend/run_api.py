@@ -1,8 +1,10 @@
 """启动 MoviePop：生成 nginx.conf 并启动后端 API 服务"""
 from __future__ import annotations
 
+import atexit
 import socket
 import subprocess
+import time
 from pathlib import Path
 
 from backend.server import create_server
@@ -106,6 +108,17 @@ def find_nginx() -> str | None:
     return shutil.which("nginx")
 
 
+def stop_existing_nginx() -> None:
+    """强制停止所有 nginx 进程，释放端口"""
+    try:
+        subprocess.run(
+            ["taskkill", "/f", "/im", "nginx.exe"],
+            capture_output=True, text=True, timeout=5,
+        )
+    except Exception:
+        pass
+
+
 def start_nginx(conf_path: Path) -> bool:
     """启动 nginx，返回是否成功"""
     nginx_exe = find_nginx()
@@ -113,6 +126,10 @@ def start_nginx(conf_path: Path) -> bool:
         print("错误: 未找到 nginx，请确保 nginx-1.30.0 目录存在或 nginx 已安装并在 PATH 中")
         return False
     try:
+        # 先停止已有的 nginx 实例
+        stop_existing_nginx()
+        time.sleep(1)
+
         result = subprocess.run(
             [nginx_exe, "-t", "-c", str(conf_path)],
             capture_output=True, text=True, timeout=10,
@@ -138,15 +155,18 @@ def main() -> None:
     api_port = config.SERVER_PORT
     nginx_port = config.NGINX_PORT
 
-    # 检查端口
+    # 检查端口，如果被占用先尝试停止已有的 nginx
     if not is_port_free(nginx_port):
-        print(f"错误: 端口 {nginx_port} 已被占用")
-        print(f"请修改 config.ini 中 [server] nginx_port 的值（如改为 8080），或关闭占用该端口的程序")
-        return
+        print(f"端口 {nginx_port} 被占用，尝试停止已有 nginx...")
+        stop_existing_nginx()
+        time.sleep(2)
+        if not is_port_free(nginx_port):
+            print(f"错误: 端口 {nginx_port} 仍被占用，请手动关闭占用该端口的程序")
+            return
+        print("已释放端口")
 
     if not is_port_free(api_port):
-        print(f"错误: API 端口 {api_port} 已被占用")
-        print(f"请修改 config.ini 中 [server] port 的值，或关闭占用该端口的程序")
+        print(f"错误: API 端口 {api_port} 已被占用，请关闭占用该端口的程序")
         return
 
     conf_path = generate_nginx_conf(api_port, nginx_port)
@@ -159,6 +179,9 @@ def main() -> None:
         print(f"nginx 启动失败，后端 API 仍会启动（可直接访问 http://127.0.0.1:{api_port}）")
         print()
 
+    # 注册退出钩子：无论以何种方式退出都停止 nginx
+    atexit.register(stop_existing_nginx)
+
     print(f"浏览器访问 http://localhost:{nginx_port}")
     print("按 Ctrl+C 停止")
     print()
@@ -168,9 +191,7 @@ def main() -> None:
         server.run()
     except KeyboardInterrupt:
         print("\n正在停止 nginx...")
-        nginx_exe = find_nginx()
-        if nginx_exe:
-            subprocess.run([nginx_exe, "-s", "stop"], capture_output=True)
+        stop_existing_nginx()
         print("已停止")
 
 
