@@ -34,7 +34,8 @@ from utils.logger import get_logger
 logger = get_logger()
 
 BASE_DIR = Path(__file__).resolve().parent.parent
-COVERS_DIR = BASE_DIR / "covers"
+APP_CONFIG = AppConfig()
+COVERS_DIR = APP_CONFIG.COVERS_DIR
 
 config_service = ConfigService()
 library_service = LibraryService()
@@ -73,6 +74,26 @@ app.add_middleware(
 
 if COVERS_DIR.exists():
     app.mount("/covers", StaticFiles(directory=str(COVERS_DIR)), name="covers")
+
+# 前端静态文件 - 支持打包后的路径
+import sys
+if getattr(sys, 'frozen', False):
+    # PyInstaller打包后的路径
+    FRONTEND_DIR = Path(sys._MEIPASS) / "frontend"
+else:
+    FRONTEND_DIR = BASE_DIR.parent / "MoviePop-front"
+
+if FRONTEND_DIR.exists():
+    app.mount("/assets", StaticFiles(directory=str(FRONTEND_DIR)), name="frontend-assets")
+
+
+@app.get("/")
+def serve_index():
+    from fastapi.responses import FileResponse
+    index_file = FRONTEND_DIR / "index.html"
+    if index_file.exists():
+        return FileResponse(str(index_file))
+    return {"error": "Frontend not found"}
 
 
 class ConfigPayload(BaseModel):

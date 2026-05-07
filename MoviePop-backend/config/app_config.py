@@ -16,10 +16,20 @@ class AppConfig:
         return cls._instance
 
     def _init_config(self):
-        self.BASE_DIR = Path(__file__).parent.parent
+        import sys
+        if getattr(sys, 'frozen', False):
+            # PyInstaller打包后，数据存储在用户目录
+            self.BASE_DIR = Path.home() / ".moviepop"
+        else:
+            self.BASE_DIR = Path(__file__).parent.parent
         self.DATA_DIR = self.BASE_DIR / "data"
         self.COVERS_DIR = self.BASE_DIR / "covers"
         self.CONFIG_FILE = self.DATA_DIR / "config.ini"
+
+        # 确保目录存在
+        self.BASE_DIR.mkdir(exist_ok=True)
+        self.DATA_DIR.mkdir(exist_ok=True)
+        self.COVERS_DIR.mkdir(exist_ok=True)
 
         self.WEBDAV_HOST = ""
         self.WEBDAV_USER = ""
@@ -75,9 +85,6 @@ class AppConfig:
         self.CLICKHOUSE_USER = os.getenv("MOVIEPOP_CLICKHOUSE_USER", "default").strip() or "default"
         self.CLICKHOUSE_PASSWORD = os.getenv("MOVIEPOP_CLICKHOUSE_PASSWORD", "")
         self.CLICKHOUSE_DATABASE = os.getenv("MOVIEPOP_CLICKHOUSE_DATABASE", "moviepop").strip() or "moviepop"
-
-        self.DATA_DIR.mkdir(exist_ok=True)
-        self.COVERS_DIR.mkdir(exist_ok=True)
 
     def save_config(self):
         config = configparser.ConfigParser(interpolation=None)

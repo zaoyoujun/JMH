@@ -10,3 +10,6 @@ MoviePop-backend/data/
 MoviePop-backend/covers/
 nginx.conf
 logs/
+build/
+dist/
+release/
