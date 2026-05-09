@@ -10,14 +10,14 @@
 - `utils`：缓存、日志、文件名解析等工具模块
 - `data`：运行期数据目录
 - `covers`：封面缓存目录
-- `run_api.py`：启动入口（含 Nginx 反向代理配置）
-- `runtime_state.py`：播放器运行时状态
+- `run_api.py`：API 启动入口
+- `run_backend.py`：后端启动入口（含 Nginx 反向代理配置）
 
 启动步骤：
 
 ```bash
 pip install -r requirements.txt
-python run_api.py
+python run_backend.py
 ```
 
 默认监听：

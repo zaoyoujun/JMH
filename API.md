@@ -3093,14 +3093,14 @@ GET /api/jobs/abc123-def456
 ## 14. 流媒体代理
 
 ### 14.1 代理 M3U8 播放列表
-#### 12.1.1 基本信息
+#### 14.1.1 基本信息
 请求路径：/api/stream/playlist.m3u8
 
 请求方式：GET
 
 接口描述：该接口用于代理 M3U8 播放列表，自动重写分片地址
 
-#### 12.1.2 请求参数
+#### 14.1.2 请求参数
 参数格式：query
 
 参数说明：
@@ -3115,20 +3115,20 @@ GET /api/jobs/abc123-def456
 /api/stream/playlist.m3u8?movie_path=/movies/video.mp4&provider=webdav
 ```
 
-#### 12.1.3 响应数据
+#### 14.1.3 响应数据
 参数格式：application/vnd.apple.mpegurl
 
 响应为 M3U8 播放列表文件内容
 
 ### 14.2 代理媒体文件流
-#### 12.2.1 基本信息
+#### 14.2.1 基本信息
 请求路径：/api/stream/media 或 /api/stream/media/{media_name}
 
 请求方式：GET, HEAD
 
 接口描述：该接口用于代理媒体文件流，支持 Range 请求
 
-#### 12.2.2 请求参数
+#### 14.2.2 请求参数
 参数格式：query
 
 路径参数：
@@ -3150,20 +3150,20 @@ GET /api/jobs/abc123-def456
 /api/stream/media/video.mp4?movie_path=/movies/video.mp4
 ```
 
-#### 12.2.3 响应数据
+#### 14.2.3 响应数据
 参数格式：根据媒体类型自动设置
 
 响应为媒体文件流，支持 Range 请求用于进度条拖动
 
 ### 14.3 代理 HLS 分片
-#### 12.3.1 基本信息
+#### 14.3.1 基本信息
 请求路径：/api/stream/segment
 
 请求方式：GET, HEAD
 
 接口描述：该接口用于代理 HLS 分片文件
 
-#### 12.3.2 请求参数
+#### 14.3.2 请求参数
 参数格式：query
 
 参数说明：
@@ -3178,7 +3178,7 @@ GET /api/jobs/abc123-def456
 /api/stream/segment?upstream=https://example.com/segment001.ts&provider=webdav
 ```
 
-#### 12.3.3 响应数据
+#### 14.3.3 响应数据
 参数格式：根据媒体类型自动设置
 
 响应为 HLS 分片文件内容

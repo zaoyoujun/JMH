@@ -54,8 +54,8 @@ JMH-split/
 │   │   ├── filename_parser.py # 文件名解析
 │   │   └── logger.py        # 日志配置
 │   ├── requirements.txt     # Python 依赖
-│   └── run_api.py           # 启动入口（含 nginx 反向代理）
-├── nginx-1.30.0/            # 内置 Nginx
+│   ├── run_api.py           # API 启动入口
+│   └── run_backend.py       # 后端启动入口（含 Nginx 反向代理）
 ├── API.md                   # API 接口文档
 ├── README.md                # 项目说明
 └── start_nginx.bat          # Windows 启动脚本
@@ -80,7 +80,7 @@ cd MoviePop-backend
 pip install -r requirements.txt
 
 # 3. 启动服务（含 Nginx 反向代理）
-python run_api.py
+python run_backend.py
 ```
 
 或直接双击根目录的 `start_nginx.bat`。
@@ -103,7 +103,7 @@ python run_api.py
 
 项目采用 Nginx 反向代理架构：
 
-- `run_api.py` 启动时自动生成 `nginx.conf` 并启动内置 Nginx（`nginx-1.30.0/`）
+- `run_backend.py` 启动时自动生成 `nginx.conf` 并启动内置 Nginx
 - Nginx 监听 `nginx_port`（默认 8088），提供前端静态资源和 API 反向代理
 - 后端 API 监听 `port`（默认 8765），通过 Nginx 代理访问
 - 端口配置在 `MoviePop-backend/data/config.ini` 的 `[server]` 段
