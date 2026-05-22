@@ -13,15 +13,13 @@ import string
 import subprocess
 import threading
 import time
-import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import quote, unquote, urlencode
 
-import requests
 
 from backend.analytics import AnalyticsETLService, TFIDFRecommendationEngine
-from backend.recommendations import RecommendationEngine, RecommendationRepository
+from backend.recommendation_repository import RecommendationRepository
 from config.app_config import AppConfig
 from core.cover_scraper import CoverScraper
 from core.local_video_library import LocalVideoLibraryManager
@@ -61,13 +59,13 @@ class ConfigService:
             "saved_mount_dirs": list(self.config.SAVED_MOUNT_DIRS),
             "local_scan_max_depth": self.config.LOCAL_SCAN_MAX_DEPTH,
             "local_mount_dirs": list(self.config.LOCAL_MOUNT_DIRS),
-            "potplayer_path": self.config.POTPLAYER_PATH,
-            "vlc_path": self.config.VLC_PATH,
+            "mpv_path": self.config.MPV_PATH,
             "default_player": self.config.DEFAULT_PLAYER,
             "video_formats": self.config.VIDEO_FORMATS,
             "enable_auto_scrape": self.config.ENABLE_AUTO_SCRAPE,
             "scrape_source": self.config.SCRAPE_SOURCE,
             "tmdb_api_key": self.config.TMDB_API_KEY,
+            "douban_cookie": self.config.DOUBAN_COOKIE,
             "tmdb_api_base": self.config.TMDB_API_BASE,
             "tmdb_web_base": self.config.TMDB_WEB_BASE,
             "tmdb_image_base": self.config.TMDB_IMAGE_BASE,
@@ -146,12 +144,8 @@ class ConfigService:
         if isinstance(local_mount_dirs, list):
             self.config.LOCAL_MOUNT_DIRS = [str(item).strip() for item in local_mount_dirs if str(item).strip()]
 
-        self.config.POTPLAYER_PATH = str(payload.get("potplayer_path", self.config.POTPLAYER_PATH)).strip()
-        self.config.VLC_PATH = str(payload.get("vlc_path", self.config.VLC_PATH)).strip()
-        default_player = str(payload.get("default_player", self.config.DEFAULT_PLAYER)).strip().lower()
-        if default_player == "builtin":
-            default_player = "vlc_controlled"
-        self.config.DEFAULT_PLAYER = default_player if default_player in {"vlc_controlled", "libvlc_desktop", "potplayer", "vlc"} else "potplayer"
+        self.config.MPV_PATH = str(payload.get("mpv_path", self.config.MPV_PATH)).strip()
+        self.config.DEFAULT_PLAYER = "mpv_desktop"
 
         video_formats = payload.get("video_formats")
         if isinstance(video_formats, list):
@@ -161,6 +155,7 @@ class ConfigService:
 
         self.config.SCRAPE_SOURCE = "auto"
         self.config.TMDB_API_KEY = str(payload.get("tmdb_api_key", self.config.TMDB_API_KEY)).strip()
+        self.config.DOUBAN_COOKIE = str(payload.get("douban_cookie", self.config.DOUBAN_COOKIE)).strip()
         self.config.TMDB_API_BASE = str(payload.get("tmdb_api_base", self.config.TMDB_API_BASE)).strip() or "https://api.themoviedb.org/3"
         self.config.TMDB_WEB_BASE = str(payload.get("tmdb_web_base", self.config.TMDB_WEB_BASE)).strip() or "https://www.themoviedb.org"
         self.config.TMDB_IMAGE_BASE = str(payload.get("tmdb_image_base", self.config.TMDB_IMAGE_BASE)).strip() or "https://image.tmdb.org/t/p/w500"
@@ -189,13 +184,13 @@ class ConfigService:
             "saved_mount_dirs": list(self.config.SAVED_MOUNT_DIRS),
             "local_scan_max_depth": self.config.LOCAL_SCAN_MAX_DEPTH,
             "local_mount_dirs": list(self.config.LOCAL_MOUNT_DIRS),
-            "potplayer_path": self.config.POTPLAYER_PATH,
-            "vlc_path": self.config.VLC_PATH,
+            "mpv_path": self.config.MPV_PATH,
             "default_player": self.config.DEFAULT_PLAYER,
             "video_formats": self.config.VIDEO_FORMATS,
             "enable_auto_scrape": self.config.ENABLE_AUTO_SCRAPE,
             "scrape_source": self.config.SCRAPE_SOURCE,
             "tmdb_api_key": self.config.TMDB_API_KEY,
+            "douban_cookie": self.config.DOUBAN_COOKIE,
             "tmdb_api_base": self.config.TMDB_API_BASE,
             "tmdb_web_base": self.config.TMDB_WEB_BASE,
             "tmdb_image_base": self.config.TMDB_IMAGE_BASE,
@@ -385,7 +380,12 @@ class LibraryService:
             )
             item["remote_provider"] = inferred_provider
             item["source_label"] = item.get("source_label") or get_remote_provider_label(inferred_provider)
-        playback = self.cache.get_playback_progress(item.get("path", "")) or {}
+        playback_items = self._get_playback_progress_candidates(item, item.get("path", ""), 0)
+        playback = max(
+            (entry for _, entry in playback_items),
+            key=lambda entry: int(entry.get("timestamp") or 0),
+            default={},
+        )
         progress_value = float(playback.get("progress") or 0)
         duration_value = float(playback.get("duration") or 0)
         progress_percent = 0
@@ -395,8 +395,9 @@ class LibraryService:
             "progress": progress_value,
             "duration": duration_value,
             "percent": progress_percent,
+            "episode_index": int(playback.get("episode_index") or 0),
             "timestamp": int(playback.get("timestamp") or 0),
-            "has_progress": progress_percent > 0,
+            "has_progress": progress_percent > 0 or progress_value >= 5,
         }
         
         # 添加标签信息
@@ -408,6 +409,34 @@ class LibraryService:
         item["sort_bucket"] = int(item.get("sort_bucket") or 9)
         item["sort_title"] = str(item.get("sort_title") or item.get("title") or item.get("name") or "").lower()
         return item
+
+    def _get_playback_progress_candidates(
+        self,
+        movie: dict[str, Any],
+        movie_path: str,
+        episode_index: int = 0,
+    ) -> list[tuple[str, dict[str, Any]]]:
+        candidates: list[str] = []
+        base_path = str(movie_path or "").strip()
+        if base_path:
+            candidates.append(base_path)
+
+        if movie.get("is_series") and movie.get("episode_files"):
+            episode_files = [str(item).strip() for item in (movie.get("episode_files") or []) if str(item).strip()]
+            if 0 <= int(episode_index or 0) < len(episode_files):
+                preferred_episode_path = episode_files[int(episode_index or 0)]
+                if preferred_episode_path and preferred_episode_path not in candidates:
+                    candidates.insert(0, preferred_episode_path)
+            for episode_path in episode_files:
+                if episode_path not in candidates:
+                    candidates.append(episode_path)
+
+        progress_items: list[tuple[str, dict[str, Any]]] = []
+        for path in candidates:
+            progress = self.cache.get_playback_progress(path) or {}
+            if progress:
+                progress_items.append((path, progress))
+        return progress_items
 
     def _movie_matches_source(self, movie: dict[str, Any], source: str) -> bool:
         if source == "combined":
@@ -494,7 +523,7 @@ class LibraryService:
         mode = (mode or "all").lower()
         source = (source or "remote").lower()
         
-        # 只在需要时加载库，避免重复加载
+        # 仅在需要时加载库，避免重复加载
         if mode in ["favorite", "recent"]:
             # 对于收藏和最近播放，只需要从缓存获取
             favorite_paths = {item.get("path", ""): True for item in self.cache.get_favorites()}
@@ -508,7 +537,7 @@ class LibraryService:
                     item for item in self.cache.get_recent_play() if self._movie_matches_source(item, source)
                 ]
             
-            # 只装饰需要的电影，避免重复装饰
+            # 获取需要的视频，避免重复获取
             movies = []
             for item in source_items:
                 path = item.get("path", "")
@@ -611,7 +640,7 @@ class LibraryService:
         return movie
 
     def get_stats(self) -> dict[str, int]:
-        # 只从缓存获取统计信息，不触发扫描（避免阻塞启动）
+        # 只从缓存获取统计信息，不触发扫描（避免冷启动延迟）
         try:
             remote_count = len(self.remote_library._cached_list) if self.remote_library._cached_list is not None else 0
             local_count = len(self.local_library._cached_list) if self.local_library._cached_list is not None else 0
@@ -623,7 +652,7 @@ class LibraryService:
                 "recent": len(self.cache.get_recent_play()),
             }
         except Exception:
-            # 出错时回退到原始方法
+            # 失败时回退到原始方法
             return {
                 "all": len(self.get_library("remote", force_refresh=False)) + len(self.get_library("local", force_refresh=False)),
                 "remote": len(self.get_library("remote", force_refresh=False)),
@@ -659,16 +688,14 @@ class LibraryService:
             for file_path in cache_targets:
                 if file_path.exists():
                     file_path.unlink(missing_ok=True)
-
-            potplayer_cache = self.config.DATA_DIR / "potplayer_cache"
-            if potplayer_cache.exists():
-                shutil.rmtree(potplayer_cache, ignore_errors=True)
         finally:
             reconfigure_logger()
 
     def clear_all_data(self) -> None:
         release_logger_handlers()
         try:
+            preserved_dir_names = {"mpv-profile"}
+
             # 先停止 OpenList 进程并禁用自动重启
             try:
                 from core.openlist_manager import openlist_manager
@@ -683,33 +710,35 @@ class LibraryService:
             if FIRST_RUN_FLAG.exists():
                 FIRST_RUN_FLAG.unlink(missing_ok=True)
 
-            # 逐个删除 data 下的子目录（webview 目录可能被锁定，单独处理）
+            # 逐个删除 data 下的子项目（webview 目录可能被锁定，单独处理）
             if self.config.DATA_DIR.exists():
                 for item in self.config.DATA_DIR.iterdir():
                     try:
+                        if item.is_dir() and item.name in preserved_dir_names:
+                            continue
                         if item.is_dir():
                             shutil.rmtree(item, ignore_errors=True)
                         else:
                             item.unlink(missing_ok=True)
                     except Exception:
-                        # 某些文件可能被 webview 进程锁定，跳过
+                        # 某些文件可能被其他进程占用，跳过即可。
                         logger.warning("无法删除: %s（可能被其他进程占用）", item)
 
-            # 如果 data 目录仍然存在且非空，尝试系统命令强制删除
+            # 如果 data 目录仍然存在且非空，尝试系统权限强制删除
             if self.config.DATA_DIR.exists():
-                remaining = list(self.config.DATA_DIR.iterdir())
+                remaining = [
+                    item for item in self.config.DATA_DIR.iterdir()
+                    if not (item.is_dir() and item.name in preserved_dir_names)
+                ]
                 if remaining:
-                    data_dir_str = str(self.config.DATA_DIR)
-                    if os.name == "nt":
-                        subprocess.run(
-                            ["cmd", "/c", "rd", "/s", "/q", data_dir_str],
-                            capture_output=True, timeout=30,
-                        )
-                    else:
-                        subprocess.run(
-                            ["rm", "-rf", data_dir_str],
-                            capture_output=True, timeout=30,
-                        )
+                    for item in remaining:
+                        try:
+                            if item.is_dir():
+                                shutil.rmtree(item, ignore_errors=True)
+                            else:
+                                item.unlink(missing_ok=True)
+                        except Exception:
+                            logger.warning("无法强制删除: %s（可能被其他进程占用）", item)
 
             self.config.DATA_DIR.mkdir(exist_ok=True)
             self.config.COVERS_DIR.mkdir(exist_ok=True)
@@ -722,10 +751,10 @@ class LibraryService:
             self.config.SCAN_MAX_DEPTH = 2
             self.config.LOCAL_MOUNT_DIRS = []
             self.config.LOCAL_SCAN_MAX_DEPTH = 3
-            self.config.POTPLAYER_PATH = ""
-            self.config.VLC_PATH = ""
-            self.config.DEFAULT_PLAYER = "potplayer"
+            self.config.MPV_PATH = ""
+            self.config.DEFAULT_PLAYER = "mpv_desktop"
             self.config.TMDB_API_KEY = ""
+            self.config.DOUBAN_COOKIE = ""
             self.config.TMDB_API_BASE = "https://api.themoviedb.org/3"
             self.config.TMDB_WEB_BASE = "https://www.themoviedb.org"
             self.config.TMDB_IMAGE_BASE = "https://image.tmdb.org/t/p/w500"
@@ -751,7 +780,13 @@ class LibraryService:
         finally:
             reconfigure_logger(include_file_handler=False)
 
-    def save_playback_progress(self, movie_path: str, progress: float, duration: float) -> dict[str, Any]:
+    def save_playback_progress(
+        self,
+        movie_path: str,
+        progress: float,
+        duration: float,
+        episode_index: int | None = None,
+    ) -> dict[str, Any]:
         """
         保存视频播放进度
         """
@@ -759,7 +794,7 @@ class LibraryService:
         if not movie:
             raise ValueError("未找到对应的视频条目")
         
-        self.cache.save_playback_progress(movie_path, progress, duration)
+        self.cache.save_playback_progress(movie_path, progress, duration, episode_index=episode_index)
         return {"success": True, "movie": movie}
 
     def get_playback_progress(self, movie_path: str) -> dict[str, Any]:
@@ -784,9 +819,15 @@ class LibraryService:
         self.cache.clear_playback_progress(movie_path)
         return {"success": True, "movie": movie}
 
+    def get_all_playback_progress(self) -> dict[str, dict]:
+        """
+        获取所有视频的播放进度
+        """
+        return self.cache.get_all_playback_progress()
+
     def get_all_tags(self) -> dict[str, int]:
         """
-        获取所有标签及其使用次数
+        获取所有标签及其使用数量
         """
         tags = self.cache.get_all_tags()
         result = {}
@@ -797,13 +838,13 @@ class LibraryService:
 
     def get_movie_tags(self, movie_path: str) -> list[str]:
         """
-        获取电影的标签
+        获取视频的标签
         """
         return self.cache.get_movie_tags(movie_path)
 
     def add_movie_tag(self, movie_path: str, tag: str) -> dict[str, Any]:
         """
-        为电影添加标签
+        为视频添加标签
         """
         movie = self.get_movie(movie_path)
         if not movie:
@@ -814,7 +855,7 @@ class LibraryService:
 
     def remove_movie_tag(self, movie_path: str, tag: str) -> dict[str, Any]:
         """
-        从电影移除标签
+        从视频移除标签
         """
         movie = self.get_movie(movie_path)
         if not movie:
@@ -825,7 +866,7 @@ class LibraryService:
 
     def get_movies_by_tag(self, tag: str, source: str = "remote") -> list[dict[str, Any]]:
         """
-        获取具有特定标签的电影
+        获取带有特定标签的视频
         """
         movie_paths = self.cache.get_movies_by_tag(tag)
         movies = []
@@ -843,14 +884,12 @@ class RecommendationService:
     def __init__(self, library_service: LibraryService) -> None:
         self.library_service = library_service
         self.repository = RecommendationRepository()
-        self.engine = RecommendationEngine(self.repository)
         self.analytics_engine = TFIDFRecommendationEngine()
         self.analytics = AnalyticsETLService(library_service, self.repository)
 
     def get_dashboard(self, limit: int = 18, external_limit: int = 8) -> dict[str, Any]:
         profile = self.repository.load_profile()
         recommendation_payload = self.repository.load_recommendations(limit=limit)
-        external_payload = self.repository.load_external_recommendations(limit=external_limit)
 
         if not recommendation_payload["items"] or profile.get("algorithm") != "tfidf_cosine":
             refreshed = self.refresh()
@@ -858,23 +897,14 @@ class RecommendationService:
                 "items": refreshed.get("items", [])[:limit],
                 "generated_at": refreshed.get("generated_at", 0),
             }
-            external_payload = {
-                "items": refreshed.get("external_items", [])[:external_limit],
-                "generated_at": refreshed.get("generated_at", 0),
-            }
             profile = refreshed.get("profile", profile)
 
         return {
             "items": recommendation_payload.get("items", []),
-            "external_items": external_payload.get("items", []),
             "profile": profile,
-            "generated_at": max(
-                int(recommendation_payload.get("generated_at") or 0),
-                int(external_payload.get("generated_at") or 0),
-            ),
+            "generated_at": int(recommendation_payload.get("generated_at") or 0),
             "stats": {
                 "library_recommendations": len(recommendation_payload.get("items", [])),
-                "external_recommendations": len(external_payload.get("items", [])),
                 "profile_tags": len(profile.get("top_tags", [])) if isinstance(profile, dict) else 0,
                 "seed_count": int(profile.get("seed_count") or 0) if isinstance(profile, dict) else 0,
             },
@@ -889,19 +919,15 @@ class RecommendationService:
         profile = analytics_payload.get("profile", {})
         self.repository.save_profile(profile)
         self.repository.save_recommendations(analytics_payload.get("items", []))
-        external_items = self.engine.fetch_external_recommendations(profile)
-        self.repository.save_external_recommendations(external_items)
         payload = {
             "items": analytics_payload.get("items", []),
             "profile": profile,
             "generated_at": int(time.time()),
-            "external_items": external_items[:15],
             "warehouse_status": warehouse_status,
         }
         profile = payload.get("profile", {})
         payload["stats"] = {
             "library_recommendations": len(payload.get("items", [])),
-            "external_recommendations": len(payload.get("external_items", [])),
             "profile_tags": len(profile.get("top_tags", [])) if isinstance(profile, dict) else 0,
             "seed_count": int(profile.get("seed_count") or 0) if isinstance(profile, dict) else 0,
         }
@@ -910,7 +936,7 @@ class RecommendationService:
     def rate_movie(self, movie_path: str, rating: float) -> dict[str, Any]:
         movie = self.library_service.get_movie(movie_path)
         if not movie:
-            raise ValueError("未找到对应的影视条目")
+            raise ValueError("未找到对应的视频条目")
         rating = max(0.0, min(5.0, float(rating)))
         self.repository.upsert_feedback(movie_path, rating=rating)
         snapshot = self.analytics.build_snapshot()
@@ -931,90 +957,375 @@ class PlaybackService:
         self.config = AppConfig()
         self.config.load_config()
         self.library_service = library_service
-        self._vlc_lock = threading.RLock()
-        self._vlc_session: dict[str, Any] | None = None
-        self._vlc_monitor_thread: threading.Thread | None = None
-        self._vlc_session_file = self.config.DATA_DIR / "vlc_controlled_session.json"
-        self._libvlc_lock = threading.RLock()
-        self._libvlc_session: dict[str, Any] | None = None
-        self._libvlc_monitor_thread: threading.Thread | None = None
-        self._restore_vlc_controlled_session()
+        self._mpv_lock = threading.RLock()
+        self._mpv_session: dict[str, Any] | None = None
+        self._mpv_monitor_thread: threading.Thread | None = None
+        self._mpv_session_file = self.config.DATA_DIR / "mpv_controlled_session.json"
+        self._restore_mpv_controlled_session()
 
-    def _resolve_player(self) -> tuple[str, str]:
-        if (
-            self.config.DEFAULT_PLAYER == "vlc"
-            and self.config.VLC_PATH
-            and os.path.exists(self.config.VLC_PATH)
-        ):
-            return self.config.VLC_PATH, "VLC"
-        if self.config.POTPLAYER_PATH and os.path.exists(self.config.POTPLAYER_PATH):
-            return self.config.POTPLAYER_PATH, "PotPlayer"
-        if self.config.VLC_PATH and os.path.exists(self.config.VLC_PATH):
-            return self.config.VLC_PATH, "VLC"
-        raise FileNotFoundError("未找到可用播放器，请先在设置中配置 PotPlayer 或 VLC。")
-
-    def _resolve_vlc_path(self) -> str:
-        if self.config.VLC_PATH and os.path.exists(self.config.VLC_PATH):
-            return self.config.VLC_PATH
-        for path in getattr(self.config, "DEFAULT_VLC_PATHS", []):
+    def _resolve_mpv_path(self) -> str:
+        if self.config.MPV_PATH and os.path.exists(self.config.MPV_PATH):
+            return self.config.MPV_PATH
+        for path in getattr(self.config, "DEFAULT_MPV_PATHS", []):
             if os.path.exists(path):
-                self.config.VLC_PATH = path
+                self.config.MPV_PATH = path
                 return path
-        raise FileNotFoundError("未找到 VLC，请先在设置中配置 VLC 路径。")
+        raise FileNotFoundError("未找到 mpv，请先在设置中配置 mpv 路径。")
 
-    def _allocate_vlc_http_port(self, start: int = 18123, attempts: int = 40) -> int:
-        for port in range(start, start + attempts):
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-                sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-                if sock.connect_ex(("127.0.0.1", port)) != 0:
-                    return port
-        raise RuntimeError("未找到可用的 VLC 控制端口。")
+    def _ensure_mpv_profile(self) -> str:
+        profile_dir = self.config.DATA_DIR / "mpv-profile"
+        profile_dir.mkdir(parents=True, exist_ok=True)
+        script_opts_dir = profile_dir / "script-opts"
+        script_opts_dir.mkdir(parents=True, exist_ok=True)
+        watch_later_dir = profile_dir / "watch_later"
+        watch_later_dir.mkdir(parents=True, exist_ok=True)
 
-    def _vlc_status_url(self, session: dict[str, Any]) -> str:
-        return f"http://127.0.0.1:{int(session['http_port'])}/requests/status.xml"
+        mpv_conf = profile_dir / "mpv.conf"
+        input_conf = profile_dir / "input.conf"
+        osc_conf = script_opts_dir / "osc.conf"
 
-    def _send_vlc_http_command(self, session: dict[str, Any], command: str, value: str | None = None) -> dict[str, Any]:
-        params = {"command": command}
-        if value is not None:
-            params["val"] = value
-        response = requests.get(
-            self._vlc_status_url(session),
-            params=params,
-            auth=("", str(session["http_password"])),
-            timeout=5,
+        mpv_conf.write_text(
+            "\n".join(
+                [
+                    "profile=pseudo-gui",
+                    "border=no",
+                    "keep-open=yes",
+                    "force-window=immediate",
+                    f"watch-later-dir={watch_later_dir}",
+                    "write-filename-in-watch-later-config=yes",
+                    "resume-playback=no",
+                    "watch-later-options=start",
+                    "save-position-on-quit=yes",
+                    "autofit-larger=88%x88%",
+                    "autofit-smaller=960x540",
+                    "geometry=50%:50%",
+                    "osc=yes",
+                    "osd-bar=yes",
+                    "script-opts-append=osc-visibility=always",
+                    "osd-font-size=24",
+                    "osd-duration=1400",
+                    "osd-color=#FFFFFFFF",
+                    "osd-border-size=1.6",
+                    "osd-shadow-offset=0.8",
+                    "cursor-autohide=1200",
+                    "cursor-autohide-fs-only=no",
+                    "background-color=#050608",
+                    "sub-auto=fuzzy",
+                    "sub-scale=1.08",
+                    "sub-color=#FFFFFFFF",
+                    "sub-border-color=#CC000000",
+                    "sub-border-size=2.2",
+                    "sub-shadow-offset=0.8",
+                    "blend-subtitles=yes",
+                    "audio-display=no",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
         )
-        response.raise_for_status()
-        return self._parse_vlc_status_xml(response.text)
-
-    def _fetch_vlc_status(self, session: dict[str, Any]) -> dict[str, Any]:
-        response = requests.get(
-            self._vlc_status_url(session),
-            auth=("", str(session["http_password"])),
-            timeout=5,
+        osc_conf.write_text(
+            "\n".join(
+                [
+                    "layout=slimbottombar",
+                    "seekbarstyle=knob",
+                    "seekbarhandlesize=0.85",
+                    "seekrangestyle=line",
+                    "seekrangeseparate=no",
+                    "visibility=always",
+                    "windowcontrols=auto",
+                    "windowcontrols_alignment=right",
+                    "windowcontrols_independent=no",
+                    "windowcontrols_title=${media-title}",
+                    "title=${media-title}",
+                    "timetotal=yes",
+                    "remaining_playtime=yes",
+                    "fadein=yes",
+                    "fadeduration=120",
+                    "hidetimeout=1800",
+                    "boxalpha=55",
+                    "barmargin=20",
+                    "scalewindowed=1.15",
+                    "scalefullscreen=1.2",
+                    "vidscale=no",
+                    "deadzonesize=1.0",
+                    "minmousemove=3",
+                    "boxvideo=yes",
+                    "dynamic_margins=yes",
+                    "sub_margins=yes",
+                    "osd_margins=yes",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
         )
-        response.raise_for_status()
-        return self._parse_vlc_status_xml(response.text)
+        input_conf.write_text(
+            "\n".join(
+                [
+                    "SPACE cycle pause",
+                    "MBTN_LEFT cycle pause",
+                    "MBTN_RIGHT quit-watch-later",
+                    "MBTN_LEFT_DBL cycle fullscreen",
+                    "ESC quit-watch-later",
+                    "q quit-watch-later",
+                    "f cycle fullscreen",
+                    "m cycle mute",
+                    "UP add volume 5",
+                    "DOWN add volume -5",
+                    "LEFT seek -5 exact",
+                    "RIGHT seek 5 exact",
+                    "WHEEL_UP add volume 3",
+                    "WHEEL_DOWN add volume -3",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        return str(profile_dir)
 
-    def _parse_vlc_status_xml(self, xml_text: str) -> dict[str, Any]:
-        root = ET.fromstring(xml_text)
-        status: dict[str, Any] = {
-            "state": (root.findtext("state") or "").strip() or "unknown",
-            "time": int(float(root.findtext("time") or 0)),
-            "length": int(float(root.findtext("length") or 0)),
-            "position": float(root.findtext("position") or 0),
-            "volume": int(float(root.findtext("volume") or 0)) if (root.findtext("volume") or "").strip() else 0,
+    def _get_mpv_watch_later_dir(self) -> Path:
+        profile_dir = self.config.DATA_DIR / "mpv-profile"
+        return profile_dir / "watch_later"
+
+    def _read_mpv_watch_later_progress(self, session: dict[str, Any]) -> tuple[float, float] | None:
+        watch_later_dir = self._get_mpv_watch_later_dir()
+        if not watch_later_dir.exists():
+            return None
+
+        identifiers = [
+            str(session.get("play_url") or "").strip(),
+            str(session.get("resolved_path") or "").strip(),
+            str(session.get("movie_path") or "").strip(),
+        ]
+        identifiers = [item for item in identifiers if item]
+        if not identifiers:
+            return None
+
+        latest_match: tuple[Path, str] | None = None
+        for file_path in watch_later_dir.glob("*"):
+            if not file_path.is_file():
+                continue
+            try:
+                content = file_path.read_text(encoding="utf-8", errors="replace")
+            except Exception:
+                continue
+            if not any(identifier in content for identifier in identifiers):
+                continue
+            if latest_match is None or file_path.stat().st_mtime > latest_match[0].stat().st_mtime:
+                latest_match = (file_path, content)
+
+        if latest_match is None:
+            return None
+
+        _, content = latest_match
+        start_seconds = None
+        for raw_line in content.splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if line.startswith("start="):
+                try:
+                    start_seconds = float(line.split("=", 1)[1].strip() or 0)
+                except Exception:
+                    start_seconds = None
+                break
+
+        if start_seconds is None or start_seconds <= 0:
+            return None
+
+        duration_seconds = float(session.get("duration_seconds") or 0)
+        return start_seconds, duration_seconds
+
+    @staticmethod
+    def _mpv_ipc_send(pipe_path: str, command: list[Any], timeout: float = 5.0) -> dict[str, Any] | None:
+        try:
+            with open(pipe_path, "w+", encoding="utf-8") as pipe:
+                payload = json.dumps({"command": command}) + "\n"
+                pipe.write(payload)
+                pipe.flush()
+                import select
+                ready, _, _ = select.select([pipe], [], [], timeout)
+                if ready:
+                    line = pipe.readline().strip()
+                    if line:
+                        return json.loads(line)
+        except Exception:
+            logger.debug("mpv IPC send failed for %s", pipe_path, exc_info=True)
+        return None
+
+    @staticmethod
+    def _mpv_ipc_send_win(pipe_path: str, command: list[Any], timeout: float = 5.0) -> dict[str, Any] | None:
+        import ctypes
+        from ctypes import wintypes
+
+        GENERIC_READ = 0x80000000
+        GENERIC_WRITE = 0x40000000
+        OPEN_EXISTING = 3
+        INVALID_HANDLE_VALUE = ctypes.c_void_p(-1).value
+
+        CreateFileW = ctypes.windll.kernel32.CreateFileW
+        CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, wintypes.LPVOID, wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
+        CreateFileW.restype = wintypes.HANDLE
+
+        WriteFile = ctypes.windll.kernel32.WriteFile
+        WriteFile.argtypes = [wintypes.HANDLE, wintypes.LPCVOID, wintypes.DWORD, ctypes.POINTER(wintypes.DWORD), wintypes.LPVOID]
+        WriteFile.restype = wintypes.BOOL
+
+        ReadFile = ctypes.windll.kernel32.ReadFile
+        ReadFile.argtypes = [wintypes.HANDLE, wintypes.LPVOID, wintypes.DWORD, ctypes.POINTER(wintypes.DWORD), wintypes.LPVOID]
+        ReadFile.restype = wintypes.BOOL
+
+        CloseHandle = ctypes.windll.kernel32.CloseHandle
+        CloseHandle.argtypes = [wintypes.HANDLE]
+        CloseHandle.restype = wintypes.BOOL
+
+        PeekNamedPipe = ctypes.windll.kernel32.PeekNamedPipe
+        PeekNamedPipe.argtypes = [wintypes.HANDLE, wintypes.LPVOID, wintypes.DWORD, ctypes.POINTER(wintypes.DWORD), ctypes.POINTER(wintypes.DWORD), ctypes.POINTER(wintypes.DWORD)]
+        PeekNamedPipe.restype = wintypes.BOOL
+
+        handle = CreateFileW(pipe_path, GENERIC_READ | GENERIC_WRITE, 0, None, OPEN_EXISTING, 0, None)
+        if handle == INVALID_HANDLE_VALUE:
+            return None
+
+        try:
+            payload = (json.dumps({"command": command}) + "\n").encode("utf-8")
+            written = wintypes.DWORD(0)
+            if not WriteFile(handle, payload, len(payload), ctypes.byref(written), None):
+                return None
+
+            deadline = time.time() + timeout
+            buf = b""
+            while time.time() < deadline:
+                avail = wintypes.DWORD(0)
+                if not PeekNamedPipe(handle, None, 0, None, ctypes.byref(avail), None):
+                    break
+                if avail.value > 0:
+                    chunk = ctypes.create_string_buffer(min(avail.value, 65536))
+                    bytes_read = wintypes.DWORD(0)
+                    if ReadFile(handle, chunk, min(avail.value, 65536), ctypes.byref(bytes_read), None):
+                        buf += chunk.raw[:bytes_read.value]
+                    if b"\n" in buf:
+                        break
+                else:
+                    time.sleep(0.05)
+            if buf:
+                for line in buf.decode("utf-8", errors="replace").splitlines():
+                    line = line.strip()
+                    if line:
+                        return json.loads(line)
+        except Exception:
+            logger.debug("mpv IPC send (win32) failed", exc_info=True)
+        finally:
+            CloseHandle(handle)
+        return None
+
+    def _mpv_send_command(self, pipe_path: str, command: list[Any], timeout: float = 5.0) -> dict[str, Any] | None:
+        if platform.system() == "Windows":
+            return self._mpv_ipc_send_win(pipe_path, command, timeout)
+        return self._mpv_ipc_send(pipe_path, command, timeout)
+
+    def _mpv_try_connect_pipe(self, pipe_path: str) -> bool:
+        if platform.system() == "Windows":
+            import ctypes
+            from ctypes import wintypes
+
+            CreateFileW = ctypes.windll.kernel32.CreateFileW
+            CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, wintypes.LPVOID, wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
+            CreateFileW.restype = wintypes.HANDLE
+            CloseHandle = ctypes.windll.kernel32.CloseHandle
+            CloseHandle.argtypes = [wintypes.HANDLE]
+            CloseHandle.restype = wintypes.BOOL
+
+            GENERIC_READ = 0x80000000
+            GENERIC_WRITE = 0x40000000
+            OPEN_EXISTING = 3
+            INVALID_HANDLE_VALUE = ctypes.c_void_p(-1).value
+
+            handle = CreateFileW(pipe_path, GENERIC_READ | GENERIC_WRITE, 0, None, OPEN_EXISTING, 0, None)
+            if handle == INVALID_HANDLE_VALUE:
+                return False
+            CloseHandle(handle)
+            return True
+        return os.path.exists(pipe_path)
+
+    def _mpv_get_property(self, pipe_path: str, prop: str) -> Any:
+        result = self._mpv_send_command(pipe_path, ["get_property", prop])
+        if result and "data" in result:
+            return result["data"]
+        return None
+
+    @staticmethod
+    def _normalize_mpv_track_list(track_list: Any, track_type: str) -> list[dict[str, Any]]:
+        normalized: list[dict[str, Any]] = []
+        if not isinstance(track_list, list):
+            return normalized
+        for item in track_list:
+            if not isinstance(item, dict):
+                continue
+            if str(item.get("type") or "").strip().lower() != track_type:
+                continue
+            track_id = item.get("id")
+            if track_id in (None, "", "no"):
+                continue
+            try:
+                track_id = int(track_id)
+            except Exception:
+                continue
+            normalized.append(
+                {
+                    "id": track_id,
+                    "title": str(item.get("title") or item.get("lang") or f"{track_type} {track_id}").strip(),
+                    "lang": str(item.get("lang") or "").strip(),
+                    "selected": bool(item.get("selected")),
+                }
+            )
+        return normalized
+
+    @staticmethod
+    def _normalize_mpv_selected_track(value: Any) -> int | None:
+        if value in (None, "", "no", "auto"):
+            return None
+        try:
+            return int(float(value))
+        except Exception:
+            return None
+
+    def _fetch_mpv_status(self, session: dict[str, Any]) -> dict[str, Any]:
+        pipe_path = session.get("pipe_path", "")
+        if not pipe_path:
+            return {}
+        pos = self._mpv_get_property(pipe_path, "time-pos")
+        dur = self._mpv_get_property(pipe_path, "duration")
+        pause = self._mpv_get_property(pipe_path, "pause")
+        volume = self._mpv_get_property(pipe_path, "volume")
+        mute = self._mpv_get_property(pipe_path, "mute")
+        speed = self._mpv_get_property(pipe_path, "speed")
+        fullscreen = self._mpv_get_property(pipe_path, "fullscreen")
+        media_title = self._mpv_get_property(pipe_path, "media-title")
+        aid = self._mpv_get_property(pipe_path, "aid")
+        sid = self._mpv_get_property(pipe_path, "sid")
+        track_list = self._mpv_get_property(pipe_path, "track-list")
+        eof = self._mpv_get_property(pipe_path, "eof-reached")
+        idle = self._mpv_get_property(pipe_path, "idle-active")
+        if all(value is None for value in (pos, dur, pause, eof, idle, media_title, track_list)):
+            return {}
+        return {
+            "position": float(pos or 0),
+            "duration": float(dur or 0),
+            "paused": bool(pause),
+            "volume": int(float(volume or 100)),
+            "muted": bool(mute),
+            "speed": float(speed or 1.0),
+            "fullscreen": bool(fullscreen),
+            "media_title": str(media_title or ""),
+            "audio_track": self._normalize_mpv_selected_track(aid),
+            "subtitle_track": self._normalize_mpv_selected_track(sid),
+            "audio_tracks": self._normalize_mpv_track_list(track_list, "audio"),
+            "subtitle_tracks": self._normalize_mpv_track_list(track_list, "sub"),
+            "eof_reached": bool(eof),
+            "idle_active": bool(idle),
         }
-        info = root.find("information")
-        if info is not None:
-            category = info.find("./category[@name='meta']")
-            if category is not None:
-                for child in list(category):
-                    key = str(child.attrib.get("name") or child.tag or "").strip()
-                    if key:
-                        status[key] = str(child.text or "").strip()
-        return status
 
-    def _build_persistable_vlc_session(self, session: dict[str, Any]) -> dict[str, Any]:
+    def _build_persistable_mpv_session(self, session: dict[str, Any]) -> dict[str, Any]:
         return {
             "token": session.get("token"),
             "active": bool(session.get("active")),
@@ -1028,141 +1339,299 @@ class PlaybackService:
             "remote_provider": session.get("remote_provider"),
             "is_series": bool(session.get("is_series")),
             "episode_index": int(session.get("episode_index") or 0),
-            "http_port": int(session.get("http_port") or 0),
-            "http_password": str(session.get("http_password") or ""),
+            "pipe_path": session.get("pipe_path"),
             "state": session.get("state"),
-            "progress_seconds": int(session.get("progress_seconds") or 0),
-            "duration_seconds": int(session.get("duration_seconds") or 0),
+            "progress_seconds": float(session.get("progress_seconds") or 0),
+            "duration_seconds": float(session.get("duration_seconds") or 0),
             "position": float(session.get("position") or 0),
-            "volume": int(session.get("volume") or 0),
+            "volume": int(session.get("volume") or 100),
+            "muted": bool(session.get("muted")),
+            "speed": float(session.get("speed") or 1.0),
+            "fullscreen": bool(session.get("fullscreen")),
+            "audio_track": session.get("audio_track"),
+            "subtitle_track": session.get("subtitle_track"),
+            "audio_tracks": list(session.get("audio_tracks") or []),
+            "subtitle_tracks": list(session.get("subtitle_tracks") or []),
             "recent_marked": bool(session.get("recent_marked")),
             "completed": bool(session.get("completed")),
             "started_at": int(session.get("started_at") or 0),
             "updated_at": int(session.get("updated_at") or 0),
         }
 
-    def _persist_vlc_session_locked(self) -> None:
-        session = self._vlc_session
+    def _persist_mpv_session_locked(self) -> None:
+        session = self._mpv_session
         if not session:
-            self._clear_persisted_vlc_session()
+            self._clear_persisted_mpv_session()
             return
         try:
-            with open(self._vlc_session_file, "w", encoding="utf-8") as file:
-                json.dump(self._build_persistable_vlc_session(session), file, ensure_ascii=False, indent=2)
+            with open(self._mpv_session_file, "w", encoding="utf-8") as f:
+                json.dump(self._build_persistable_mpv_session(session), f, ensure_ascii=False, indent=2)
         except Exception:
-            logger.debug("persist VLC controlled session failed", exc_info=True)
+            logger.debug("persist mpv controlled session failed", exc_info=True)
 
-    def _clear_persisted_vlc_session(self) -> None:
+    def _clear_persisted_mpv_session(self) -> None:
         try:
-            if self._vlc_session_file.exists():
-                self._vlc_session_file.unlink()
+            if self._mpv_session_file.exists():
+                self._mpv_session_file.unlink()
         except Exception:
-            logger.debug("clear VLC controlled session cache failed", exc_info=True)
+            logger.debug("clear mpv controlled session cache failed", exc_info=True)
 
-    def _restore_vlc_controlled_session(self) -> None:
-        if not self._vlc_session_file.exists():
+    def _restore_mpv_controlled_session(self) -> None:
+        if not self._mpv_session_file.exists():
             return
         try:
-            with open(self._vlc_session_file, "r", encoding="utf-8") as file:
-                restored = json.load(file)
+            with open(self._mpv_session_file, "r", encoding="utf-8") as f:
+                restored = json.load(f)
         except Exception:
-            self._clear_persisted_vlc_session()
+            self._clear_persisted_mpv_session()
             return
 
-        if not isinstance(restored, dict) or not restored.get("movie_path") or not restored.get("http_port"):
-            self._clear_persisted_vlc_session()
+        if not isinstance(restored, dict) or not restored.get("movie_path") or not restored.get("pipe_path"):
+            self._clear_persisted_mpv_session()
             return
 
         session = dict(restored)
         session["active"] = bool(session.get("active", True))
         session["process"] = None
-        session.setdefault("player", "vlc_controlled")
+        session.setdefault("player", "mpv_desktop")
         session.setdefault("display_title", session.get("title") or "")
         session.setdefault("state", "launching")
         session.setdefault("progress_seconds", 0)
         session.setdefault("duration_seconds", 0)
         session.setdefault("position", 0.0)
-        session.setdefault("volume", 0)
+        session.setdefault("volume", 100)
         session.setdefault("recent_marked", False)
         session.setdefault("completed", False)
 
         try:
-            status = self._fetch_vlc_status(session)
+            status = self._fetch_mpv_status(session)
         except Exception:
-            self._clear_persisted_vlc_session()
+            self._clear_persisted_mpv_session()
             return
 
-        self._merge_vlc_session_status(session, status)
-        self._sync_vlc_playback_state(session)
+        if not status:
+            self._clear_persisted_mpv_session()
+            return
+
+        self._merge_mpv_session_status(session, status)
+        self._sync_mpv_playback_state(session)
         token = str(session.get("token") or secrets.token_hex(12))
         session["token"] = token
-        with self._vlc_lock:
-            self._vlc_session = session
-            self._persist_vlc_session_locked()
-            self._vlc_monitor_thread = threading.Thread(
-                target=self._vlc_monitor_loop,
+        with self._mpv_lock:
+            self._mpv_session = session
+            self._persist_mpv_session_locked()
+            self._mpv_monitor_thread = threading.Thread(
+                target=self._mpv_monitor_loop,
                 args=(token,),
-                name="moviepop-vlc-monitor-restored",
+                name="moviepop-mpv-monitor-restored",
                 daemon=True,
             )
-            self._vlc_monitor_thread.start()
+            self._mpv_monitor_thread.start()
 
-    def _merge_vlc_session_status(self, session: dict[str, Any], status: dict[str, Any]) -> None:
-        session["state"] = status.get("state", session.get("state", "unknown"))
-        session["progress_seconds"] = max(0, int(status.get("time") or 0))
-        session["duration_seconds"] = max(0, int(status.get("length") or 0))
-        session["position"] = float(status.get("position") or 0)
-        session["volume"] = int(status.get("volume") or 0)
+    def _merge_mpv_session_status(self, session: dict[str, Any], status: dict[str, Any]) -> None:
+        duration = float(status.get("duration") or 0)
+        position = float(status.get("position") or 0)
+        paused = bool(status.get("paused"))
+        eof = bool(status.get("eof_reached"))
+        idle = bool(status.get("idle_active"))
+
+        if eof or (idle and duration > 0 and position >= duration - 2):
+            session["state"] = "stopped"
+        elif paused:
+            session["state"] = "paused"
+        elif position > 0 or duration > 0:
+            session["state"] = "playing"
+        else:
+            session["state"] = "launching"
+
+        session["progress_seconds"] = max(0.0, position)
+        session["duration_seconds"] = max(0.0, duration)
+        session["position"] = position / duration if duration > 0 else 0.0
+        session["volume"] = int(float(status.get("volume") or 100))
+        session["muted"] = bool(status.get("muted"))
+        session["speed"] = float(status.get("speed") or 1.0)
+        session["fullscreen"] = bool(status.get("fullscreen"))
+        session["audio_track"] = status.get("audio_track")
+        session["subtitle_track"] = status.get("subtitle_track")
+        session["audio_tracks"] = list(status.get("audio_tracks") or [])
+        session["subtitle_tracks"] = list(status.get("subtitle_tracks") or [])
         session["updated_at"] = int(time.time())
-        meta_title = str(status.get("title") or "").strip()
-        if meta_title:
-            session["display_title"] = meta_title
+        media_title = str(status.get("media_title") or "").strip()
+        if media_title:
+            session["display_title"] = media_title
         elif not session.get("display_title"):
             session["display_title"] = session.get("title") or ""
 
-    def _sync_vlc_playback_state(self, session: dict[str, Any]) -> None:
+    def _save_mpv_playback_progress(
+        self,
+        path: str,
+        progress_seconds: float,
+        duration_seconds: float,
+        episode_index: int,
+    ) -> None:
+        if not path:
+            return
+        try:
+            self.library_service.save_playback_progress(
+                path,
+                progress_seconds,
+                duration_seconds,
+                episode_index=episode_index,
+            )
+        except ValueError:
+            self.library_service.cache.save_playback_progress(
+                path,
+                progress_seconds,
+                duration_seconds,
+                episode_index=episode_index,
+            )
+
+    def _clear_mpv_playback_progress(self, path: str) -> None:
+        if not path:
+            return
+        try:
+            self.library_service.clear_playback_progress(path)
+        except ValueError:
+            self.library_service.cache.clear_playback_progress(path)
+
+    def _sync_mpv_playback_state(self, session: dict[str, Any]) -> None:
         movie_path = str(session.get("movie_path") or "")
+        resolved_path = str(session.get("resolved_path") or "")
         if not movie_path:
             return
 
-        progress_seconds = max(0, int(session.get("progress_seconds") or 0))
-        duration_seconds = max(0, int(session.get("duration_seconds") or 0))
+        progress_seconds = float(session.get("progress_seconds") or 0)
+        duration_seconds = float(session.get("duration_seconds") or 0)
         state = str(session.get("state") or "")
+        episode_index = int(session.get("episode_index") or 0)
 
-        if not session.get("recent_marked") and state in {"opening", "playing", "paused"}:
+        if not session.get("recent_marked") and state in {"launching", "playing", "paused"}:
             try:
                 self.library_service.add_recent(movie_path)
             except Exception:
                 logger.debug("mark recent failed for %s", movie_path, exc_info=True)
             session["recent_marked"] = True
 
-        if duration_seconds > 0 and progress_seconds > 0:
+        if progress_seconds > 0 and (duration_seconds > 0 or state in {"playing", "paused", "stopped"}):
             try:
-                self.library_service.save_playback_progress(movie_path, float(progress_seconds), float(duration_seconds))
+                self._save_mpv_playback_progress(movie_path, progress_seconds, duration_seconds, episode_index)
             except Exception:
                 logger.debug("save progress failed for %s", movie_path, exc_info=True)
+            if resolved_path and resolved_path != movie_path:
+                try:
+                    self._save_mpv_playback_progress(resolved_path, progress_seconds, duration_seconds, episode_index)
+                except Exception:
+                    logger.debug("save progress failed for resolved path %s", resolved_path, exc_info=True)
 
-        completed = duration_seconds > 0 and progress_seconds >= max(duration_seconds - 15, int(duration_seconds * 0.97))
+        completed = duration_seconds > 0 and progress_seconds >= max(duration_seconds - 15, duration_seconds * 0.97)
         if completed:
+            # 播放完成时，保存进度为视频完整时长（表示已看完）
             try:
-                self.library_service.clear_playback_progress(movie_path)
+                self._save_mpv_playback_progress(movie_path, duration_seconds, duration_seconds, episode_index)
             except Exception:
-                logger.debug("clear progress failed for %s", movie_path, exc_info=True)
+                logger.debug("save completed progress failed for %s", movie_path, exc_info=True)
+            if resolved_path and resolved_path != movie_path:
+                try:
+                    self._save_mpv_playback_progress(resolved_path, duration_seconds, duration_seconds, episode_index)
+                except Exception:
+                    logger.debug("save completed progress failed for resolved path %s", resolved_path, exc_info=True)
+            
+            # 不清除进度，保留已完成状态
             session["completed"] = True
 
-        self._persist_vlc_session_locked()
+        self._persist_mpv_session_locked()
 
-    def _stop_existing_vlc_session_locked(self) -> None:
-        session = self._vlc_session
-        if not session:
-            self._clear_persisted_vlc_session()
+    def _mpv_monitor_loop(self, token: str) -> None:
+        while True:
+            with self._mpv_lock:
+                session = self._mpv_session
+                if not session or session.get("token") != token or not session.get("active"):
+                    return
+            try:
+                status = self._fetch_mpv_status(session)
+                with self._mpv_lock:
+                    active = self._mpv_session
+                    if not active or active.get("token") != token:
+                        return
+                    if not status:
+                        self._sync_progress_from_watch_later_locked(active)
+                        active["active"] = False
+                        self._persist_mpv_session_locked()
+                        return
+                    self._merge_mpv_session_status(active, status)
+                    self._sync_mpv_playback_state(active)
+                    if active.get("state") == "stopped":
+                        self._sync_progress_from_watch_later_locked(active)
+                        active["active"] = False
+                        self._persist_mpv_session_locked()
+            except Exception:
+                logger.debug("poll mpv status failed", exc_info=True)
+                with self._mpv_lock:
+                    active = self._mpv_session
+                    if active and active.get("token") == token:
+                        self._sync_progress_from_watch_later_locked(active)
+                        active["active"] = False
+                        self._persist_mpv_session_locked()
+            time.sleep(2)
+
+    def _flush_mpv_session_progress_locked(self, session: dict[str, Any] | None = None) -> None:
+        active_session = session or self._mpv_session
+        if not active_session:
             return
-        session["active"] = False
-        self._persist_vlc_session_locked()
         try:
-            self._send_vlc_http_command(session, "pl_stop")
+            status = self._fetch_mpv_status(active_session)
+            if status:
+                self._merge_mpv_session_status(active_session, status)
+                self._sync_mpv_playback_state(active_session)
+            else:
+                # 如果无法从 mpv 获取状态，尝试从 watch_later 文件中读取进度
+                self._sync_progress_from_watch_later_locked(active_session)
         except Exception:
-            logger.debug("stop VLC http session failed", exc_info=True)
+            logger.debug("flush mpv session progress failed", exc_info=True)
+            # 如果获取状态失败，尝试从 watch_later 文件中读取进度
+            try:
+                self._sync_progress_from_watch_later_locked(active_session)
+            except Exception:
+                logger.debug("sync progress from watch later failed", exc_info=True)
+
+    def _sync_progress_from_watch_later_locked(self, session: dict[str, Any] | None = None) -> None:
+        active_session = session or self._mpv_session
+        if not active_session:
+            return
+        watch_later_progress = None
+        for attempt in range(5):
+            watch_later_progress = self._read_mpv_watch_later_progress(active_session)
+            if watch_later_progress:
+                break
+            if attempt < 4:
+                time.sleep(0.2)
+        if not watch_later_progress:
+            return
+
+        progress_seconds, duration_seconds = watch_later_progress
+        active_session["progress_seconds"] = max(float(active_session.get("progress_seconds") or 0), float(progress_seconds or 0))
+        if duration_seconds > 0:
+            active_session["duration_seconds"] = float(duration_seconds)
+            active_session["position"] = active_session["progress_seconds"] / duration_seconds
+        if str(active_session.get("state") or "").lower() == "launching":
+            active_session["state"] = "stopped"
+        active_session["updated_at"] = int(time.time())
+        self._sync_mpv_playback_state(active_session)
+
+    def _stop_existing_mpv_session_locked(self) -> None:
+        session = self._mpv_session
+        if not session:
+            self._clear_persisted_mpv_session()
+            return
+        self._flush_mpv_session_progress_locked(session)
+        session["active"] = False
+        self._persist_mpv_session_locked()
+        try:
+            pipe_path = session.get("pipe_path")
+            if pipe_path:
+                self._mpv_send_command(pipe_path, ["quit"], timeout=2.0)
+        except Exception:
+            logger.debug("stop mpv ipc session failed", exc_info=True)
         process = session.get("process")
         if process and process.poll() is None:
             try:
@@ -1172,46 +1641,14 @@ class PlaybackService:
                 try:
                     process.kill()
                 except Exception:
-                    logger.debug("kill VLC process failed", exc_info=True)
-        self._vlc_session = None
-        self._clear_persisted_vlc_session()
-
-    def _vlc_monitor_loop(self, token: str) -> None:
-        while True:
-            with self._vlc_lock:
-                session = self._vlc_session
-                if not session or session.get("token") != token or not session.get("active"):
-                    return
-            try:
-                status = self._fetch_vlc_status(session)
-                with self._vlc_lock:
-                    active = self._vlc_session
-                    if not active or active.get("token") != token:
-                        return
-                    self._merge_vlc_session_status(active, status)
-                    self._sync_vlc_playback_state(active)
-                    process = active.get("process")
-                    if process and process.poll() is not None and active.get("state") == "stopped":
-                        active["active"] = False
-                        self._persist_vlc_session_locked()
-            except Exception:
-                logger.debug("poll VLC status failed", exc_info=True)
-                with self._vlc_lock:
-                    active = self._vlc_session
-                    if active and active.get("token") == token:
-                        process = active.get("process")
-                        if process and process.poll() is not None:
-                            active["active"] = False
-                            self._persist_vlc_session_locked()
-                        elif not process:
-                            active["active"] = False
-                            self._persist_vlc_session_locked()
-            time.sleep(2)
+                    logger.debug("kill mpv process failed", exc_info=True)
+        self._mpv_session = None
+        self._clear_persisted_mpv_session()
 
     def _resolve_movie_for_playback(self, movie_path: str) -> dict[str, Any]:
         movie = self.library_service.get_movie(movie_path)
         if not movie:
-            raise ValueError("鏈壘鍒板搴旂殑瑙嗛鏉＄洰")
+            raise ValueError("未找到对应的视频条目")
         return movie
 
     def _resolve_file_path(self, movie: dict[str, Any], episode_index: int = 0) -> str:
@@ -1221,8 +1658,75 @@ class PlaybackService:
             if 0 <= episode_index < len(episode_files):
                 file_path = episode_files[episode_index]
         if not file_path:
-            raise ValueError("瑙嗛璺緞鏃犳晥")
+            raise ValueError("视频路径无效")
         return str(file_path)
+
+    def _get_playback_progress_candidates(
+        self,
+        movie: dict[str, Any],
+        movie_path: str,
+        episode_index: int = 0,
+    ) -> list[tuple[str, dict[str, Any]]]:
+        candidates: list[str] = []
+        base_path = str(movie_path or "").strip()
+        if base_path:
+            candidates.append(base_path)
+
+        if movie.get("is_series") and movie.get("episode_files"):
+            episode_files = [str(item).strip() for item in (movie.get("episode_files") or []) if str(item).strip()]
+            if 0 <= int(episode_index or 0) < len(episode_files):
+                preferred_episode_path = episode_files[int(episode_index or 0)]
+                if preferred_episode_path and preferred_episode_path not in candidates:
+                    candidates.insert(0, preferred_episode_path)
+            for episode_path in episode_files:
+                if episode_path not in candidates:
+                    candidates.append(episode_path)
+
+        progress_items: list[tuple[str, dict[str, Any]]] = []
+        for path in candidates:
+            progress = self.library_service.cache.get_playback_progress(path) or {}
+            if progress:
+                progress_items.append((path, progress))
+        return progress_items
+
+    def _get_resume_position(self, movie: dict[str, Any], movie_path: str, episode_index: int = 0) -> float:
+        progress_items = self._get_playback_progress_candidates(movie, movie_path, episode_index)
+        if not progress_items:
+            return 0.0
+
+        preferred_episode_path = ""
+        if movie.get("is_series") and movie.get("episode_files"):
+            episode_files = movie.get("episode_files") or []
+            if 0 <= int(episode_index or 0) < len(episode_files):
+                preferred_episode_path = str(episode_files[int(episode_index or 0)] or "").strip()
+
+        progress: dict[str, Any] = {}
+        if preferred_episode_path:
+            for path, item in progress_items:
+                if path == preferred_episode_path:
+                    progress = item
+                    break
+
+        if not progress and movie.get("is_series"):
+            for _, item in progress_items:
+                if int(item.get("episode_index") or 0) == int(episode_index or 0):
+                    progress = item
+                    break
+
+        if not progress and not movie.get("is_series"):
+            progress = max(
+                (item for _, item in progress_items),
+                key=lambda item: int(item.get("timestamp") or 0),
+                default={},
+            )
+
+        progress_seconds = float(progress.get("progress") or 0)
+        duration_seconds = float(progress.get("duration") or 0)
+        if progress_seconds < 5:
+            return 0.0
+        if duration_seconds > 0 and progress_seconds >= max(duration_seconds - 15, duration_seconds * 0.97):
+            return 0.0
+        return progress_seconds
 
     def build_proxy_play_url(self, movie_path: str, episode_index: int = 0) -> str:
         movie = self.library_service.get_movie(movie_path)
@@ -1251,35 +1755,42 @@ class PlaybackService:
         from backend.server import resolved_port
         return f"http://127.0.0.1:{resolved_port}/api/stream/media/{encoded_name}?{query}"
 
-    def start_vlc_controlled_playback(self, movie_path: str, episode_index: int = 0) -> dict[str, Any]:
+    def start_mpv_controlled_playback(self, movie_path: str, episode_index: int = 0) -> dict[str, Any]:
         movie = self._resolve_movie_for_playback(movie_path)
         file_path = self._resolve_file_path(movie, episode_index)
-        vlc_path = self._resolve_vlc_path()
-        http_port = self._allocate_vlc_http_port()
-        http_password = secrets.token_urlsafe(18)
+        mpv_path = self._resolve_mpv_path()
         play_target = file_path if movie.get("source") == "local" else self.build_proxy_play_url(movie_path, episode_index)
+        resume_seconds = self._get_resume_position(movie, movie_path, episode_index)
         token = secrets.token_hex(12)
+        pipe_name = f"moviepop-mpv-{token[:8]}"
+        if platform.system() == "Windows":
+            pipe_path = f"\\\\.\\pipe\\{pipe_name}"
+        else:
+            pipe_path = str(self.config.DATA_DIR / f"mpv-{token[:8]}.sock")
 
-        with self._vlc_lock:
-            self._stop_existing_vlc_session_locked()
+        mpv_profile_dir = self._ensure_mpv_profile()
+
+        with self._mpv_lock:
+            self._stop_existing_mpv_session_locked()
 
         cmd = [
-            vlc_path,
-            "--extraintf=http",
-            "--http-host=127.0.0.1",
-            f"--http-port={http_port}",
-            f"--http-password={http_password}",
-            "--no-video-title-show",
-            "--one-instance",
-            "--one-instance-when-started-from-file",
-            play_target,
+            mpv_path,
+            f"--input-ipc-server={pipe_path}",
+            f"--config-dir={mpv_profile_dir}",
+            "--force-window=immediate",
+            "--keep-open=yes",
+            "--border=no",
+            "--no-terminal",
         ]
+        if resume_seconds > 0:
+            cmd.append(f"--start={resume_seconds:.3f}")
+        cmd.append(play_target)
 
         process = subprocess.Popen(cmd, shell=False)
         session: dict[str, Any] = {
             "token": token,
             "active": True,
-            "player": "vlc_controlled",
+            "player": "mpv_desktop",
             "movie_path": movie_path,
             "resolved_path": file_path,
             "play_url": play_target,
@@ -1289,42 +1800,69 @@ class PlaybackService:
             "remote_provider": movie.get("remote_provider"),
             "is_series": bool(movie.get("is_series")),
             "episode_index": int(episode_index or 0),
-            "http_port": http_port,
-            "http_password": http_password,
+            "pipe_path": pipe_path,
             "state": "launching",
-            "progress_seconds": 0,
+            "progress_seconds": resume_seconds,
             "duration_seconds": 0,
             "position": 0.0,
-            "volume": 0,
+            "volume": 100,
+            "muted": False,
+            "speed": 1.0,
+            "fullscreen": False,
+            "audio_track": None,
+            "subtitle_track": None,
+            "audio_tracks": [],
+            "subtitle_tracks": [],
             "recent_marked": False,
             "completed": False,
+            "resume_seconds": resume_seconds,
+            "resume_applied": resume_seconds > 0,
             "started_at": int(time.time()),
             "updated_at": int(time.time()),
             "process": process,
         }
 
-        with self._vlc_lock:
-            self._vlc_session = session
-            self._persist_vlc_session_locked()
-            self._vlc_monitor_thread = threading.Thread(
-                target=self._vlc_monitor_loop,
+        pipe_wait_deadline = time.time() + 15
+        pipe_ready = False
+        while time.time() < pipe_wait_deadline:
+            if process.poll() is not None:
+                break
+            if self._mpv_try_connect_pipe(pipe_path):
+                pipe_ready = True
+                break
+            time.sleep(0.3)
+
+        if pipe_ready:
+            try:
+                status = self._fetch_mpv_status(session)
+                if status:
+                    self._merge_mpv_session_status(session, status)
+            except Exception:
+                logger.debug("initial mpv status fetch failed", exc_info=True)
+
+        with self._mpv_lock:
+            self._mpv_session = session
+            self._persist_mpv_session_locked()
+            self._mpv_monitor_thread = threading.Thread(
+                target=self._mpv_monitor_loop,
                 args=(token,),
-                name="moviepop-vlc-monitor",
+                name="moviepop-mpv-monitor",
                 daemon=True,
             )
-            self._vlc_monitor_thread.start()
+            self._mpv_monitor_thread.start()
 
-        return self.get_vlc_controlled_session()
+        return self.get_mpv_controlled_session()
 
-    def get_vlc_controlled_session(self) -> dict[str, Any]:
-        with self._vlc_lock:
-            session = self._vlc_session
+    def get_mpv_controlled_session(self) -> dict[str, Any]:
+        with self._mpv_lock:
+            session = self._mpv_session
             if not session:
                 return {"active": False}
             process = session.get("process")
             if process and process.poll() is not None:
+                self._sync_progress_from_watch_later_locked(session)
                 session["active"] = False
-                self._persist_vlc_session_locked()
+                self._persist_mpv_session_locked()
             active = bool(session.get("active")) and not (process and process.poll() is not None and session.get("state") == "stopped")
             return {
                 "active": active,
@@ -1338,105 +1876,109 @@ class PlaybackService:
                 "is_series": bool(session.get("is_series")),
                 "episode_index": session.get("episode_index", 0),
                 "state": session.get("state", "unknown"),
-                "progress_seconds": int(session.get("progress_seconds") or 0),
-                "duration_seconds": int(session.get("duration_seconds") or 0),
+                "progress_seconds": float(session.get("progress_seconds") or 0),
+                "duration_seconds": float(session.get("duration_seconds") or 0),
                 "position": float(session.get("position") or 0),
-                "volume": int(session.get("volume") or 0),
+                "volume": int(session.get("volume") or 100),
+                "muted": bool(session.get("muted")),
+                "speed": float(session.get("speed") or 1.0),
+                "fullscreen": bool(session.get("fullscreen")),
+                "audio_track": session.get("audio_track"),
+                "subtitle_track": session.get("subtitle_track"),
+                "audio_tracks": list(session.get("audio_tracks") or []),
+                "subtitle_tracks": list(session.get("subtitle_tracks") or []),
                 "completed": bool(session.get("completed")),
+                "resume_seconds": float(session.get("resume_seconds") or 0),
+                "resume_applied": bool(session.get("resume_applied")),
                 "started_at": int(session.get("started_at") or 0),
                 "updated_at": int(session.get("updated_at") or 0),
             }
 
-    def control_vlc_controlled_session(self, action: str, value: str | None = None) -> dict[str, Any]:
-        with self._vlc_lock:
-            session = self._vlc_session
+
+    def control_mpv_controlled_session(self, action: str, value: str | None = None) -> dict[str, Any]:
+        with self._mpv_lock:
+            session = self._mpv_session
             if not session:
-                raise ValueError("当前没有正在运行的 VLC 受控会话。")
-            state = str(session.get("state") or "")
+                raise ValueError("当前没有正在运行的 mpv 会话。")
+            pipe_path = session.get("pipe_path", "")
+            if not pipe_path:
+                raise ValueError("mpv IPC 管道路径不可用。")
             normalized = str(action or "").strip().lower()
             if normalized == "toggle":
-                status = self._send_vlc_http_command(session, "pl_pause")
+                self._mpv_send_command(pipe_path, ["set_property", "pause", "cycle"])
             elif normalized == "pause":
-                status = self._send_vlc_http_command(session, "pl_pause") if state != "paused" else self._fetch_vlc_status(session)
+                self._mpv_send_command(pipe_path, ["set_property", "pause", True])
             elif normalized == "resume":
-                status = self._send_vlc_http_command(session, "pl_pause") if state == "paused" else self._fetch_vlc_status(session)
+                self._mpv_send_command(pipe_path, ["set_property", "pause", False])
             elif normalized == "stop":
-                status = self._send_vlc_http_command(session, "pl_stop")
+                self._flush_mpv_session_progress_locked(session)
+                self._mpv_send_command(pipe_path, ["quit"])
                 session["active"] = False
             elif normalized == "seek":
                 if value is None:
                     raise ValueError("seek 命令缺少目标位置。")
-                status = self._send_vlc_http_command(session, "seek", value)
+                self._mpv_send_command(pipe_path, ["seek", value, "absolute"])
             elif normalized == "seek_forward":
-                step = str(value or "+15S")
-                status = self._send_vlc_http_command(session, "seek", step if step.startswith("+") else f"+{step}")
+                step = int(value or 15)
+                self._mpv_send_command(pipe_path, ["seek", step, "relative"])
             elif normalized == "seek_backward":
-                step = str(value or "-15S")
-                status = self._send_vlc_http_command(session, "seek", step if step.startswith("-") else f"-{step}")
+                step = int(value or 15)
+                self._mpv_send_command(pipe_path, ["seek", -step, "relative"])
+            elif normalized == "volume":
+                if value is None:
+                    raise ValueError("volume 命令缺少目标音量。")
+                self._mpv_send_command(pipe_path, ["set_property", "volume", float(value)])
+            elif normalized == "mute":
+                self._mpv_send_command(pipe_path, ["cycle", "mute"])
+            elif normalized == "fullscreen":
+                self._mpv_send_command(pipe_path, ["cycle", "fullscreen"])
+            elif normalized == "speed":
+                if value is None:
+                    raise ValueError("speed 命令缺少目标倍速。")
+                self._mpv_send_command(pipe_path, ["set_property", "speed", float(value)])
+            elif normalized == "audio_track":
+                if value is None:
+                    raise ValueError("audio_track 命令缺少目标音轨。")
+                track_value: Any = "no" if str(value).strip().lower() in {"", "off", "none", "no", "-1"} else int(float(value))
+                self._mpv_send_command(pipe_path, ["set_property", "aid", track_value])
+            elif normalized == "subtitle_track":
+                if value is None:
+                    raise ValueError("subtitle_track 命令缺少目标字幕。")
+                track_value: Any = "no" if str(value).strip().lower() in {"", "off", "none", "no", "-1"} else int(float(value))
+                self._mpv_send_command(pipe_path, ["set_property", "sid", track_value])
             else:
-                raise ValueError("不支持的 VLC 控制命令。")
-            self._merge_vlc_session_status(session, status)
-            self._sync_vlc_playback_state(session)
-        return self.get_vlc_controlled_session()
+                raise ValueError("不支持的 mpv 控制命令。")
+            try:
+                status = self._fetch_mpv_status(session)
+                if status:
+                    self._merge_mpv_session_status(session, status)
+                    self._sync_mpv_playback_state(session)
+            except Exception:
+                logger.debug("mpv command status fetch failed", exc_info=True)
+        return self.get_mpv_controlled_session()
 
-    def stop_vlc_controlled_session(self) -> dict[str, Any]:
-        with self._vlc_lock:
-            self._stop_existing_vlc_session_locked()
+    def stop_mpv_controlled_session(self) -> dict[str, Any]:
+        with self._mpv_lock:
+            self._stop_existing_mpv_session_locked()
         return {"success": True}
 
     def play(self, movie_path: str, episode_index: int = 0) -> dict[str, Any]:
-        movie = self.library_service.get_movie(movie_path)
-        if not movie:
-            raise ValueError("未找到对应的视频条目")
-
-        file_path = movie.get("path", "")
-        if movie.get("is_series") and movie.get("episode_files"):
-            episode_files = movie.get("episode_files", [])
-            if 0 <= episode_index < len(episode_files):
-                file_path = episode_files[episode_index]
-
-        if not file_path:
-            raise ValueError("视频路径无效")
-
-        player_path, player_name = self._resolve_player()
-        is_local_source = movie.get("source") == "local"
-        if is_local_source:
-            play_target = file_path
-        else:
-            play_target = build_remote_client(self.config, movie.get("remote_provider")).get_file_url(file_path)
-        cmd = [player_path]
-
-        if player_name == "PotPlayer":
-            cache_dir = self.config.DATA_DIR / "potplayer_cache"
-            cache_dir.mkdir(exist_ok=True)
-            cmd.extend(
-                [
-                    "/buftime:5",
-                    "/http_bufsize:102400",
-                    "/diskcache:1",
-                    "/diskcachesize:2048",
-                    f'/cachepath:"{cache_dir.absolute()}"',
-                ]
-            )
-        elif not is_local_source:
-            cmd.append("--network-caching=3000")
-
-        cmd.append(play_target)
-        subprocess.Popen(cmd, shell=False)
-        self.library_service.add_recent(movie_path)
-        logger.info("启动播放器成功: %s -> %s", player_name, play_target)
-        return {
-            "player": player_name,
-            "file_path": file_path,
-            "play_url": play_target,
-            "source": movie.get("source"),
-        }
-
+        return self.start_mpv_controlled_playback(movie_path, episode_index)
 
 class ScraperService:
     def __init__(self, library_service: LibraryService) -> None:
         self.library_service = library_service
         self.scraper = CoverScraper()
+
+    @staticmethod
+    def _movie_matches_any_path(movie: dict[str, Any], target_paths: set[str]) -> bool:
+        movie_path = str(movie.get("path") or "")
+        if movie_path in target_paths:
+            return True
+        for episode_path in movie.get("episode_files") or []:
+            if str(episode_path or "") in target_paths:
+                return True
+        return False
 
     def search_candidates(self, movie_path: str, custom_name: str | None = None) -> dict[str, Any]:
         movie = self.library_service.get_movie(movie_path)
@@ -1501,7 +2043,7 @@ class ScraperService:
             updates["year"] = candidate_payload["year"]
 
         if not updates:
-            raise ValueError("未能从所选结果中更新任何信息")
+            raise ValueError("无法从所选结果中更新任何信息")
         return self.library_service.save_custom_info(movie_path, updates, source=movie.get("source"))
 
     def scrape_single(self, movie_path: str, custom_name: str | None = None) -> dict[str, Any]:
@@ -1527,7 +2069,30 @@ class ScraperService:
 
     def scrape_library(self, source: str = "remote", progress: ProgressCallback | None = None) -> dict[str, Any]:
         raw_movies = self.library_service._load_raw_library(source, force_refresh=False)  # noqa: SLF001
+        return self._scrape_movies(raw_movies, source=source, progress=progress)
+
+    def scrape_paths(
+        self,
+        paths: list[str],
+        *,
+        source: str = "remote",
+        progress: ProgressCallback | None = None,
+    ) -> dict[str, Any]:
+        target_paths = {str(path or "").strip() for path in paths if str(path or "").strip()}
+        raw_movies = self.library_service._load_raw_library(source, force_refresh=False)  # noqa: SLF001
+        scoped_movies = [movie for movie in raw_movies if self._movie_matches_any_path(movie, target_paths)]
+        return self._scrape_movies(scoped_movies, source=source, progress=progress)
+
+    def _scrape_movies(
+        self,
+        raw_movies: list[dict[str, Any]],
+        *,
+        source: str,
+        progress: ProgressCallback | None = None,
+    ) -> dict[str, Any]:
         total = len(raw_movies)
+        if total > 0:
+            logger.info("=" * 50)
         updated_count = 0
         for index, movie in enumerate(raw_movies, start=1):
             title = movie.get("title") or movie.get("name") or "未命名"
@@ -1540,7 +2105,7 @@ class ScraperService:
                     force_update_meta=True,
                 )
             except Exception:
-                logger.exception("刮削失败: %s", title)
+                logger.exception("抓取失败: %s", title)
                 continue
 
             if cover_path:
@@ -1552,7 +2117,13 @@ class ScraperService:
             if cover_path or (intro_text and intro_text.strip()) or scraped_year:
                 updated_count += 1
 
-        self.library_service._save_raw_library(source, raw_movies)  # noqa: SLF001
+        current_library = self.library_service._load_raw_library(source, force_refresh=False)  # noqa: SLF001
+        updated_map = {str(movie.get("path") or ""): movie for movie in raw_movies}
+        merged_library: list[dict[str, Any]] = []
+        for movie in current_library:
+            replacement = updated_map.get(str(movie.get("path") or ""))
+            merged_library.append(replacement if replacement else movie)
+        self.library_service._save_raw_library(source, merged_library)  # noqa: SLF001
         if progress:
             progress(total, total, "元数据补全完成")
         return {"total": total, "updated": updated_count}
@@ -1611,7 +2182,7 @@ class OpenListService:
                 self.config.OPENLIST_PORT = port
         if "admin_password" in payload:
             password = str(payload["admin_password"]).strip()
-            # 空密码不覆盖已有密码（浏览器不会预填 type=password 的真实值）
+            # 空密码不覆盖已有密码（浏览器不会提交 type=password 的真实值）
             if password:
                 self.config.OPENLIST_ADMIN_PASSWORD = password
         if "auto_start" in payload:
@@ -1622,7 +2193,7 @@ class OpenListService:
     def start(self) -> dict[str, Any]:
         from core.openlist_manager import openlist_manager
         if not openlist_manager.is_binary_available():
-            return {"success": False, "message": "OpenList 二进制文件不存在，请先下载"}
+            return {"success": False, "message": "OpenList 二进制文件不存在，请先下载。"}
         if not self.config.OPENLIST_ADMIN_PASSWORD:
             import secrets
             self.config.OPENLIST_ADMIN_PASSWORD = secrets.token_urlsafe(16)
@@ -1633,7 +2204,7 @@ class OpenListService:
         return result
 
     def _sync_password_via_api(self) -> None:
-        """用 API 验证/同步密码：admin set 修改数据库但运行中服务读的是内存缓存"""
+        """?? API ?? OpenList ?????"""
         from core.openlist_manager import openlist_manager
         from core.openlist_client import OpenListAdminClient
         port = openlist_manager._active_port or self.config.OPENLIST_PORT or 5244
@@ -1644,7 +2215,7 @@ class OpenListService:
         # 1) 先用目标密码试登录
         try:
             client.login(target_password)
-            return  # 密码已正确
+            return  # 密码已匹配
         except Exception:
             pass
         # 2) 目标密码不对，用默认密码登录后通过 API 修改
@@ -1691,7 +2262,7 @@ class OpenListService:
     def reset_password(self, password: str) -> dict[str, Any]:
         from core.openlist_manager import openlist_manager
         from core.openlist_client import OpenListAdminClient
-        # 先尝试用 API 修改（OpenList 运行中时有效）
+        # 先尝试用 API 修改(OpenList 运行时有效)
         port = openlist_manager._active_port or self.config.OPENLIST_PORT or 5244
         client = OpenListAdminClient(f"http://127.0.0.1:{port}")
         old_password = self.config.OPENLIST_ADMIN_PASSWORD or "123456"
@@ -1759,7 +2330,7 @@ class OpenListService:
         return client.list_storages(self.config.OPENLIST_ADMIN_PASSWORD)
 
     def list_directories(self, path: str = "/", recursive: bool = False) -> list[dict[str, str]]:
-        """列目录。recursive=True 时递归返回所有嵌套目录（用于树形视图）。"""
+        """?????recursive=True ?????????"""
         client = self._get_openlist_client()
         password = self._ensure_openlist_password(client)
         if recursive:
@@ -1767,7 +2338,7 @@ class OpenListService:
         return self._list_dirs_at(client, password, path)
 
     def _ensure_openlist_password(self, client) -> str:
-        """确保能登录 OpenList，尝试配置密码和常见默认密码。"""
+        """?????? OpenList?????????????"""
         password = self.config.OPENLIST_ADMIN_PASSWORD or ""
         try:
             client.login(password)
@@ -1780,14 +2351,14 @@ class OpenListService:
                 if not self.config.OPENLIST_ADMIN_PASSWORD:
                     self.config.OPENLIST_ADMIN_PASSWORD = default_pwd
                     self.config.save_config()
-                    logger.info("OpenList 密码已自动同步: %s", default_pwd[:3] + "***")
+                    logger.info("OpenList 密码已自动同步 %s", default_pwd[:3] + "***")
                 return default_pwd
             except Exception:
                 continue
         return password
 
     def _list_dirs_at(self, client, password: str, path: str) -> list[dict[str, str]]:
-        """用 OpenList /api/fs/list 返回当前层级的子目录。"""
+        """?? OpenList /api/fs/list ???????????"""
         try:
             normalized_path = self._normalize_openlist_path(path)
             data = client.list_files(password, normalized_path)
@@ -1812,7 +2383,7 @@ class OpenListService:
             raise
 
     def _list_dirs_recursive(self, client, password: str, root_path: str, max_depth: int = 5) -> list[dict[str, str]]:
-        """BFS 递归列出所有嵌套目录。"""
+        """使用 BFS 递归列出目录"""
         all_dirs: list[dict[str, str]] = []
         queue = [(root_path, 0)]
         visited: set[str] = set()
@@ -1828,7 +2399,7 @@ class OpenListService:
                     if depth < max_depth:
                         queue.append((d["full_path"], depth + 1))
             except Exception as exc:
-                logger.warning("递归列出目录失败 %s: %s", current, exc)
+                logger.warning("遍历列出目录失败 %s: %s", current, exc)
         return all_dirs
 
     def add_storage(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -1860,11 +2431,10 @@ class OpenListService:
 
 
 class ReportService:
-    def __init__(self, library_service: LibraryService, recommendation_service: RecommendationService) -> None:
+    def __init__(self, library_service: LibraryService) -> None:
         self.library_service = library_service
-        self.recommendation_service = recommendation_service
-        self.cache = VideoCache()
-        self.analytics = AnalyticsETLService(library_service, recommendation_service.repository)
+        self.repository = RecommendationRepository()
+        self.analytics = AnalyticsETLService(library_service, self.repository)
 
     def get_report(self) -> dict[str, Any]:
         snapshot = self.analytics.build_snapshot()
@@ -1873,128 +2443,4 @@ class ReportService:
         payload["warehouse_status"] = warehouse_status
         return payload
 
-        movies = self.library_service.get_movies(mode="all", source="combined", search="", force_refresh=False)
-        favorites = self.cache.get_favorites()
-        recent_play = self.cache.get_recent_play()
-        playback_data = self.cache.get_all_playback_progress()
-        feedback_map = self.recommendation_service.repository.get_feedback_map()
 
-        total = len(movies)
-        fav_paths = {item.get("path") for item in favorites}
-        recent_paths = {item.get("path") for item in recent_play}
-
-        # 类型分布
-        type_counter: dict[str, int] = {}
-        for movie in movies:
-            mtype = movie.get("type") or "视频"
-            type_counter[mtype] = type_counter.get(mtype, 0) + 1
-
-        type_distribution = []
-        for name, count in sorted(type_counter.items(), key=lambda x: x[1], reverse=True):
-            type_distribution.append({"name": name, "count": count, "percent": round(count / total * 100) if total else 0})
-
-        # 年代分布
-        def year_bucket(year: int) -> str:
-            if year >= 2022:
-                return "2022-至今"
-            if year >= 2016:
-                return "2016-2021"
-            if year >= 2010:
-                return "2010-2015"
-            if year > 0:
-                return "2010年以前"
-            return "年份未知"
-
-        year_counter: dict[str, int] = {}
-        for movie in movies:
-            bucket = year_bucket(int(movie.get("year") or 0))
-            year_counter[bucket] = year_counter.get(bucket, 0) + 1
-
-        year_distribution = [
-            {"name": name, "count": count}
-            for name, count in sorted(year_counter.items(), key=lambda x: x[1], reverse=True)
-        ]
-
-        # 来源分布
-        source_counter: dict[str, int] = {"远程": 0, "本地": 0}
-        for movie in movies:
-            path = movie.get("path", "")
-            if LOCAL_PATH_RE.match(path):
-                source_counter["本地"] += 1
-            else:
-                source_counter["远程"] += 1
-
-        source_distribution = [{"name": name, "count": count} for name, count in source_counter.items()]
-
-        # 完播统计
-        completed = 0
-        in_progress = 0
-        not_started = 0
-        for movie in movies:
-            path = movie.get("path", "")
-            pb = playback_data.get(path, {})
-            percent = 0
-            if pb:
-                progress_sec = float(pb.get("progress") or 0)
-                duration_sec = float(pb.get("duration") or 0)
-                if duration_sec > 0:
-                    percent = min(100, round(progress_sec / duration_sec * 100))
-            if percent >= 90:
-                completed += 1
-            elif percent > 0:
-                in_progress += 1
-            else:
-                not_started += 1
-
-        # 总观影时长（小时）
-        total_seconds = sum(float(pb.get("progress") or 0) for pb in playback_data.values())
-        total_watch_hours = round(total_seconds / 3600, 1)
-
-        # 平均评分
-        ratings = [v["rating"] for v in feedback_map.values() if v.get("rating") and v["rating"] > 0]
-        avg_rating = round(sum(ratings) / len(ratings), 1) if ratings else 0
-
-        # 偏好标签（从推荐引擎画像获取）
-        profile = self.recommendation_service.repository.load_profile()
-        genre_preferences = profile.get("top_tags", []) if isinstance(profile, dict) else []
-
-        # 近期动态（最近 10 条有播放进度的记录）
-        activity_items = []
-        sorted_playback = sorted(
-            playback_data.items(),
-            key=lambda x: int(x[1].get("timestamp") or 0),
-            reverse=True,
-        )
-        for path, pb in sorted_playback[:10]:
-            movie = self.library_service.get_movie(path)
-            title = movie.get("title") or movie.get("name") or path.split("/")[-1] if movie else path.split("/")[-1]
-            mtype = movie.get("type") or "视频" if movie else "视频"
-            progress_sec = float(pb.get("progress") or 0)
-            duration_sec = float(pb.get("duration") or 0)
-            percent = min(100, round(progress_sec / duration_sec * 100)) if duration_sec > 0 else 0
-            activity_items.append({
-                "title": title,
-                "type": mtype,
-                "timestamp": int(pb.get("timestamp") or 0),
-                "progress": percent,
-            })
-
-        return {
-            "overview": {
-                "total_movies": total,
-                "favorites": len(fav_paths),
-                "watched": len(recent_paths),
-                "total_watch_hours": total_watch_hours,
-                "avg_rating": avg_rating,
-            },
-            "type_distribution": type_distribution,
-            "genre_preferences": genre_preferences,
-            "year_distribution": year_distribution,
-            "source_distribution": source_distribution,
-            "completion_stats": {
-                "completed": completed,
-                "in_progress": in_progress,
-                "not_started": not_started,
-            },
-            "recent_activity": activity_items,
-        }

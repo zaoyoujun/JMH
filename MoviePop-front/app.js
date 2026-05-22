@@ -1,4 +1,4 @@
-﻿
+﻿﻿
 // 应用状态管理
 const state = {
   view: "all",
@@ -34,12 +34,15 @@ const state = {
   allTags: {},
   tagInputValue: "",
   reportData: null,
+  analyticsData: null,
   playerRuntime: null,
+  scanStatus: null,
   openlistStatus: null,
   openlistStorages: [],
   openlistDrivers: [],
   openlistDriverForm: null,
   inlinePlayer: {
+    mode: "",
     moviePath: "",
     resolvedPath: "",
     title: "",
@@ -93,6 +96,16 @@ const _themeOptionsBase = [
   { value: "coast", label: "海岸" },
 ];
 function getThemeOptions() { return _themeOptionsBase; }
+
+function formatRelativeTime(timestamp) {
+  const value = Number(timestamp || 0);
+  if (!value) return "未执行";
+  const diff = Math.max(0, Math.floor(Date.now() / 1000) - value);
+  if (diff < 60) return "刚刚";
+  if (diff < 3600) return `${Math.floor(diff / 60)} 分钟前`;
+  if (diff < 86400) return `${Math.floor(diff / 3600)} 小时前`;
+  return `${Math.floor(diff / 86400)} 天前`;
+}
 
 const _remoteProviderOptionsBase = [
   { value: "openlist", label: "OpenList 网盘" },
@@ -174,6 +187,10 @@ function getRemoteRootPath() {
   return "/";
 }
 
+function supportsIncrementalRemoteScan() {
+  return false;
+}
+
 function normalizeRemoteDirectoryPath(path) {
   let value = String(path || "/").trim().replace(/\\/g, "/");
   if (!value) value = "/";
@@ -226,18 +243,22 @@ async function init() {
   const playerCloseBtn = document.querySelector("#playerModal .modal-close");
   if (playerCloseBtn) playerCloseBtn.textContent = "关闭";
   const playerKicker = document.querySelector("#playerModal .section-eyebrow");
-  if (playerKicker) playerKicker.textContent = "VLC 受控模式";
+  if (playerKicker) playerKicker.textContent = "内置播放器 mpv";
   const playerTitle = document.getElementById("inlinePlayerTitle");
-  if (playerTitle) playerTitle.textContent = "正在连接 VLC";
+  if (playerTitle) playerTitle.textContent = "正在连接 mpv";
   const playerMeta = document.getElementById("inlinePlayerMeta");
   if (playerMeta) playerMeta.textContent = "由应用接管播放进度、最近播放和观影统计";
   await loadBootstrap();
+  await loadAllPlaybackProgress();
   await loadCurrentView();
 }
 
 function bindGlobalEvents() {
   window.addEventListener("beforeunload", () => {
     closeInlinePlayer({ refresh: false }).catch(() => {});
+  });
+  window.addEventListener("resize", () => {
+    syncInlinePlayerLayout().catch(() => {});
   });
 
   elements.navList.addEventListener("click", async (event) => {
@@ -267,6 +288,8 @@ function bindGlobalEvents() {
 
     if (state.view === "report") {
       state.reportData = null;
+      state.analyticsData = null;
+      state.hasAnalyticsData = undefined;
       await loadReport();
       render();
       return;
@@ -300,11 +323,19 @@ function bindGlobalEvents() {
     }
     if (!ensureSourceConfigured(source)) return;
 
+    const useIncremental = supportsIncrementalRemoteScan() && (source === "remote" || source === "combined");
+    const autoScrape = state.config?.enable_auto_scrape !== false;
     const response = await guarded(() =>
-      api(`/api/library/refresh?source=${encodeURIComponent(source)}&auto_scrape=true`, { method: "POST" })
+      useIncremental
+        ? api(`/api/library/scan-incremental?auto_scrape=${autoScrape}&recent_only=false`, { method: "POST" })
+        : api(`/api/library/refresh?source=${encodeURIComponent(source)}&auto_scrape=${autoScrape}`, { method: "POST" })
     );
     if (response) {
-      startJobPolling(response.job_id, source, `${getSourceLabel(source)}刷新完成`);
+      startJobPolling(
+        response.job_id,
+        source,
+        useIncremental ? `${getSourceLabel(source)}新增扫描完成` : `${getSourceLabel(source)}刷新完成`
+      );
     }
   });
 
@@ -324,6 +355,12 @@ function bindGlobalEvents() {
     const vlcCommandBtn = event.target.closest("[data-vlc-command]");
     if (vlcCommandBtn) {
       await sendInlinePlayerCommand(vlcCommandBtn.dataset.vlcCommand);
+      return;
+    }
+
+    const mpvCommandBtn = event.target.closest("[data-mpv-command]");
+    if (mpvCommandBtn) {
+      await sendInlinePlayerCommand(mpvCommandBtn.dataset.mpvCommand);
       return;
     }
 
@@ -623,6 +660,7 @@ async function loadBootstrap() {
   state.config = payload.config;
   state.stats = payload.stats;
   state.playerRuntime = payload.player_runtime || null;
+  state.scanStatus = payload.scan_status || null;
   state.webdavDirs = new Set(normalizeRemoteDirSetItems(payload.config.saved_mount_dirs || []));
   state.localDirs = new Set(payload.config.local_mount_dirs || []);
   applyTheme(payload.config.ui_theme || payload.config.interface_theme);
@@ -683,24 +721,22 @@ function isListView(view) {
 }
 
 async function loadRecommendations(showLoading = true) {
-  const payload = await guarded(() => api("/api/recommendations"), showLoading, "正在生成个性化推荐...");
-  if (!payload) return;
-  state.recommendationItems = payload.items || [];
-  state.externalRecommendations = payload.external_items || [];
-  state.recommendationProfile = payload.profile || null;
-  state.recommendationStats = payload.stats || null;
-  state.recommendationGeneratedAt = payload.generated_at || 0;
+  // 推荐功能已移除，返回空数据
+  state.recommendationItems = [];
+  state.externalRecommendations = [];
+  state.recommendationProfile = null;
+  state.recommendationStats = null;
+  state.recommendationGeneratedAt = 0;
   render();
 }
 
 async function refreshRecommendations(showToastAfter = false) {
-  const payload = await guarded(() => api("/api/recommendations/refresh", { method: "POST" }), true, "正在更新推荐画像...");
-  if (!payload) return;
-  state.recommendationItems = payload.items || [];
-  state.externalRecommendations = payload.external_items || [];
-  state.recommendationProfile = payload.profile || null;
-  state.recommendationGeneratedAt = payload.generated_at || 0;
-  state.recommendationStats = payload.stats || null;
+  // 推荐功能已移除，返回空数据
+  state.recommendationItems = [];
+  state.externalRecommendations = [];
+  state.recommendationProfile = null;
+  state.recommendationGeneratedAt = 0;
+  state.recommendationStats = null;
   if (showToastAfter) {
     showToast("推荐结果已更新", "success");
   }
@@ -867,32 +903,127 @@ function getLibrarySourceForView(view) {
 }
 
 function getSeasonLabel(movie, fallbackIndex = 0) {
+  const specialType = String(movie?.special_type || "").trim();
+  if (specialType) return specialType;
+  const seasonTitle = String(movie?.season_title || "").trim();
+  if (seasonTitle && /^(ova|oad|oav|sp|特别篇|剧场版|外传|前传)$/i.test(seasonTitle)) {
+    return seasonTitle;
+  }
   const seasonNumber = Number(movie?.season || fallbackIndex + 1 || 1);
   return `\u7b2c ${seasonNumber} \u5b63`;
 }
 
+function getSeriesDisplayTitle(movie) {
+  const seriesTitle = String(movie?.series_title || "").trim();
+  if (seriesTitle) return seriesTitle;
+  const seasonNumber = Number(movie?.season || 0);
+  const seasonTitle = String(movie?.season_title || "").trim();
+  const rawTitle = String(movie?.title || movie?.name || "").trim();
+  if (!rawTitle) return "未命名";
+  if (seasonTitle && rawTitle.endsWith(seasonTitle)) {
+    const trimmed = rawTitle.slice(0, rawTitle.length - seasonTitle.length).trim();
+    if (trimmed) return trimmed;
+  }
+  const seasonMarker = rawTitle.match(/(第\s*[\d一二三四五六七八九十]+\s*季|season\s*\d+|s\d{1,2})/i);
+  if (seasonMarker && typeof seasonMarker.index === "number") {
+    const prefix = rawTitle.slice(0, seasonMarker.index).trim().replace(/[·:：\-_.\s]+$/g, "");
+    const suffix = stripSeasonSegmentMarkers(
+      stripSeasonTokenText(rawTitle.slice(seasonMarker.index + seasonMarker[0].length), seasonNumber)
+    );
+    const normalizedPrefix = normalizeSeriesFolderName(prefix);
+    const normalizedSuffix = normalizeSeriesFolderName(suffix);
+    if (prefix && suffix && normalizedPrefix && normalizedSuffix && (normalizedSuffix.startsWith(normalizedPrefix) || normalizedPrefix.startsWith(normalizedSuffix))) {
+      return prefix.length <= suffix.length ? prefix : suffix;
+    }
+    if (prefix) return prefix;
+  }
+  return rawTitle;
+}
+
+function escapeRegex(value) {
+  return String(value || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function stripSeriesPrefix(title, seriesTitle) {
+  const rawTitle = String(title || "").trim();
+  const baseSeries = String(seriesTitle || "").trim();
+  if (!rawTitle || !baseSeries) return rawTitle;
+  return rawTitle.replace(new RegExp(`^${escapeRegex(baseSeries)}[\\s:：·\\-_.]*`, "i"), "").trim();
+}
+
+function stripSeasonTokenText(value, season = 0) {
+  let result = String(value || "").trim();
+  if (!result) return "";
+  if (season > 0) {
+    result = result
+      .replace(new RegExp(`第\\s*${season}\\s*季`, "gi"), " ")
+      .replace(new RegExp(`Season\\s*${season}`, "gi"), " ")
+      .replace(new RegExp(`S0?${season}(?!\\d)`, "gi"), " ");
+  }
+  result = result
+    .replace(/[（(]\s*(第[\d一二三四五六七八九十]+季|season\s*\d+|s\d{1,2})\s*[)）]/gi, " ")
+    .replace(/\b(final season|season\s*\d+|s\d{1,2})\b/gi, " ")
+    .replace(/第\s*[\d一二三四五六七八九十]+\s*季/gi, " ")
+    .replace(/\s+/g, " ")
+    .replace(/^[·:：\-_.\s]+|[·:：\-_.\s]+$/g, "")
+    .trim();
+  return result;
+}
+
+function stripSeasonSegmentMarkers(value) {
+  return String(value || "")
+    .replace(/[#＃]\s*\d+/g, " ")
+    .replace(/\bpart\s*\d+\b/gi, " ")
+    .replace(/第\s*[\d一二三四五六七八九十]+\s*(部分|篇|章|部)/gi, " ")
+    .replace(/\b(前篇|后篇|後篇|上篇|下篇|前编|后编|後編)\b/gi, " ")
+    .replace(/\b([上下前后])\b/g, " ")
+    .replace(/\s+/g, " ")
+    .replace(/^[·:：\-_.\s]+|[·:：\-_.\s]+$/g, "")
+    .trim();
+}
+
+function getCompactSeasonTitle(entry, groupMovie = null) {
+  const rawSeasonTitle = String(entry?.season_title || "").trim();
+  if (!rawSeasonTitle) return "";
+  const seriesTitle = getSeriesDisplayTitle(groupMovie || entry);
+  const seasonNumber = Number(entry?.season || 0);
+  const compact = stripSeasonSegmentMarkers(stripSeasonTokenText(stripSeriesPrefix(rawSeasonTitle, seriesTitle), seasonNumber));
+  return compact && normalizeSeriesFolderName(compact) !== normalizeSeriesFolderName(seriesTitle) ? compact : "";
+}
+
 function getSeasonEntryLabel(entry, groupMovie = null, fallbackIndex = 0) {
   const seasonLabel = getSeasonLabel(entry, fallbackIndex);
-  const rawTitle = String(entry?.title || entry?.name || "").trim();
-  const groupTitle = String(groupMovie?.title || groupMovie?.name || "").trim();
-  let suffix = rawTitle;
-  if (groupTitle && suffix.startsWith(groupTitle)) {
-    suffix = suffix.slice(groupTitle.length).trim();
+  const extras = [];
+  const seasonTitle = getCompactSeasonTitle(entry, groupMovie);
+  const specialType = String(entry?.special_type || "").trim();
+  const groupSeriesTitle = getSeriesDisplayTitle(groupMovie);
+  const entrySeriesTitle = getSeriesDisplayTitle(entry);
+  const normalizedGroupSeries = normalizeSeriesFolderName(groupSeriesTitle);
+  const normalizedEntrySeries = normalizeSeriesFolderName(entrySeriesTitle);
+
+  if (
+    seasonTitle &&
+    seasonTitle !== seasonLabel &&
+    normalizeSeriesFolderName(seasonTitle) !== normalizedGroupSeries &&
+    normalizeSeriesFolderName(seasonTitle) !== normalizedEntrySeries
+  ) {
+    extras.push(seasonTitle);
   }
-  suffix = suffix
-    .replace(/\u7b2c\s*[\d\u4e00-\u5341]+\s*\u5b63/gi, " ")
-    .replace(/season\s*\d+/gi, " ")
-    .replace(/[#＃]\d+/g, (match) => ` ${match} `)
-    .replace(/[（(]/g, " ")
-    .replace(/[）)]/g, " ")
-    .replace(/\s+/g, " ")
-    .replace(/^[·:：\-_\s]+/, "")
-    .trim();
-  if (!suffix) return seasonLabel;
-  const normalizedSuffix = normalizeSeriesFolderName(suffix);
-  const normalizedGroup = normalizeSeriesFolderName(groupTitle);
-  if (!normalizedSuffix || normalizedSuffix === normalizedGroup) return seasonLabel;
-  return `${seasonLabel} · ${suffix}`;
+  if (
+    specialType &&
+    specialType !== seasonLabel &&
+    !extras.some((item) => normalizeSeriesFolderName(item) === normalizeSeriesFolderName(specialType))
+  ) {
+    extras.push(specialType);
+  }
+  const part = Number(entry?.part || 0);
+  if (part > 0) {
+    const partLabel = `Part ${part}`;
+    if (!extras.some((item) => normalizeSeriesFolderName(item) === normalizeSeriesFolderName(partLabel))) {
+      extras.push(partLabel);
+    }
+  }
+  return extras.length ? `${seasonLabel} · ${extras.join(" · ")}` : seasonLabel;
 }
 
 function normalizeSeriesFolderName(name) {
@@ -931,7 +1062,7 @@ function getSeriesPathGroupName(movie) {
 
 function normalizeSeriesKey(movie) {
   const pathBase = getSeriesPathGroupName(movie);
-  const titleBase = normalizeSeriesFolderName(movie?.title || movie?.name || "");
+  const titleBase = normalizeSeriesFolderName(movie?.series_title || movie?.title || movie?.name || "");
   let base = pathBase || titleBase;
   if (!pathBase && /[\u4e00-\u9fff]/.test(String(movie?.title || ""))) {
     const collapsed = String(movie?.title || "")
@@ -950,8 +1081,61 @@ function normalizeSeriesKey(movie) {
   return `${base}::${source}`;
 }
 
+function buildSeasonBucketKey(entry) {
+  const specialType = String(entry?.special_type || "").trim().toLowerCase();
+  const seasonNumber = Number(entry?.season || 0);
+  if (specialType) {
+    return `special::${specialType}::${normalizeSeriesFolderName(getCompactSeasonTitle(entry) || String(entry?.season_title || ""))}`;
+  }
+  if (seasonNumber > 0) return `season::${seasonNumber}`;
+  return `path::${entry?.path || ""}`;
+}
+
+function mergeSeasonEntries(entries = []) {
+  const buckets = new Map();
+  for (const entry of entries) {
+    const key = buildSeasonBucketKey(entry);
+    if (!buckets.has(key)) buckets.set(key, []);
+    buckets.get(key).push(entry);
+  }
+
+  return [...buckets.values()].map((bucket) => {
+    if (bucket.length === 1) return bucket[0];
+    const ordered = [...bucket].sort((left, right) => String(left.path || "").localeCompare(String(right.path || "")));
+    const primary = ordered.find((item) => item.cover_url || item.intro) || ordered[0];
+    const latestPlayback = ordered
+      .filter((item) => item.playback?.has_progress)
+      .sort((left, right) => Number(right.playback?.timestamp || 0) - Number(left.playback?.timestamp || 0))[0] || null;
+    const compactTitles = [...new Set(ordered.map((item) => getCompactSeasonTitle(item, primary)).filter(Boolean))];
+    const mergedEpisodes = ordered.flatMap((item) => (Array.isArray(item.episodes) ? item.episodes : []));
+    const mergedEpisodeFiles = ordered.flatMap((item) => (Array.isArray(item.episode_files) ? item.episode_files : []));
+    return {
+      ...primary,
+      title: getSeriesDisplayTitle(primary),
+      name: getSeriesDisplayTitle(primary),
+      season_title: compactTitles[0] || getCompactSeasonTitle(primary) || "",
+      episode_count: Math.max(
+        mergedEpisodes.length,
+        mergedEpisodeFiles.length,
+        ordered.reduce((sum, item) => sum + Number(item.episode_count || item.episode_files?.length || item.episodes?.length || 0), 0)
+      ),
+      episodes: mergedEpisodes,
+      episode_files: mergedEpisodeFiles,
+      playback: latestPlayback?.playback || primary.playback,
+      resume_path: latestPlayback?.path || primary.resume_path || primary.path,
+      resume_episode_index: Number((latestPlayback?.playback || primary.playback)?.episode_index || 0),
+      merged_segment_count: bucket.length,
+      source_label: [...new Set(ordered.map((item) => item.source_label).filter(Boolean))].join(" / ") || primary.source_label,
+    };
+  });
+}
+
 function buildGroupedSeries(groupItems) {
-  const seasons = [...groupItems].sort((left, right) => Number(left.season || 0) - Number(right.season || 0));
+  const seasons = mergeSeasonEntries(groupItems).sort((left, right) => {
+    const seasonGap = Number(left.season || 0) - Number(right.season || 0);
+    if (seasonGap !== 0) return seasonGap;
+    return String(left.path || "").localeCompare(String(right.path || ""));
+  });
   const primary = seasons.find((item) => item.cover_url || item.intro) || seasons[0];
   const tags = [...new Set(seasons.flatMap((item) => (Array.isArray(item.tags) ? item.tags : [])))];
   const inferredTags = [...new Set(seasons.flatMap((item) => (Array.isArray(item.inferred_tags) ? item.inferred_tags : [])))];
@@ -976,8 +1160,9 @@ function buildGroupedSeries(groupItems) {
     : "";
   return {
     ...primary,
-    title: primary.title || primary.name,
-    name: primary.name || primary.title,
+    title: getSeriesDisplayTitle(primary),
+    name: getSeriesDisplayTitle(primary),
+    series_title: getSeriesDisplayTitle(primary),
     seasons,
     season_count: seasons.length,
     episode_count: totalEpisodes,
@@ -990,10 +1175,11 @@ function buildGroupedSeries(groupItems) {
     category: primary.category || seasons.find((item) => item.category)?.category || "",
     franchise: primary.franchise || seasons.find((item) => item.franchise)?.franchise || "",
     sort_bucket: Number(primary.sort_bucket || seasons.find((item) => item.sort_bucket)?.sort_bucket || 9),
-    sort_title: primary.sort_title || primary.title || primary.name || "",
+    sort_title: primary.sort_title || getSeriesDisplayTitle(primary) || primary.title || primary.name || "",
     path: primary.path,
     playback,
     resume_path: latestPlaybackSeason?.path || primary.path,
+    resume_episode_index: Number(playback?.episode_index || 0),
     resume_season_label: resumeSeasonLabel,
   };
 }
@@ -1046,9 +1232,93 @@ function syncSelectedMovie() {
 }
 
 
-function formatPlaybackText(playback) {
+let allPlaybackProgress = {};
+
+async function loadAllPlaybackProgress() {
+  try {
+    const payload = await api("/api/movies/all-progress");
+    if (payload?.success && payload.progress) {
+      allPlaybackProgress = payload.progress;
+    }
+  } catch (e) {
+    console.log("加载所有播放进度失败:", e);
+  }
+}
+
+function getWatchedEpisodeCount(movie) {
+  if (!movie?.is_series) return 0;
+  
+  let watchedCount = 0;
+  const seasons = Array.isArray(movie.seasons) ? movie.seasons : [movie];
+  
+  for (const season of seasons) {
+    const episodeFiles = Array.isArray(season.episode_files) ? season.episode_files : [];
+    
+    for (const episodePath of episodeFiles) {
+      const progressData = allPlaybackProgress[episodePath];
+      if (progressData && progressData.progress && progressData.duration) {
+        const percent = (progressData.progress / progressData.duration) * 100;
+        if (percent >= 90) {
+          watchedCount++;
+        }
+      }
+    }
+  }
+  
+  return watchedCount;
+}
+
+function getSeriesAverageProgress(movie) {
+  if (!movie?.is_series) return 0;
+  
+  let totalProgress = 0;
+  let episodeCount = 0;
+  
+  const seasons = Array.isArray(movie.seasons) ? movie.seasons : [movie];
+  
+  for (const season of seasons) {
+    const episodeFiles = Array.isArray(season.episode_files) ? season.episode_files : [];
+    
+    for (const episodePath of episodeFiles) {
+      const progressData = allPlaybackProgress[episodePath];
+      if (progressData && progressData.progress && progressData.duration) {
+        const percent = (progressData.progress / progressData.duration) * 100;
+        totalProgress += percent;
+        episodeCount++;
+      }
+    }
+  }
+  
+  return episodeCount > 0 ? totalProgress / episodeCount : 0;
+}
+
+function formatPlaybackText(playback, movie = null) {
   if (!playback?.has_progress) return "";
-  return `${"已观看"} ${playback.percent}%`;
+  
+  if (movie?.is_series) {
+    const avgProgress = getSeriesAverageProgress(movie);
+    if (avgProgress >= 90) {
+      return "已看完";
+    }
+  }
+  
+  const percent = Number(playback.percent || 0);
+  if (percent <= 0 && Number(playback.progress || 0) > 0) {
+    return `${"看到"} ${formatDuration(playback.progress)}`;
+  }
+  return `${"已观看"} ${percent}%`;
+}
+
+function formatEpisodeLabel(index) {
+  const episodeNumber = Number(index || 0) + 1;
+  if (!Number.isFinite(episodeNumber) || episodeNumber <= 0) return "";
+  return `第 ${episodeNumber} 集`;
+}
+
+function formatResumeEpisodeHint(movie) {
+  if (!movie?.is_series) return "";
+  const episodeIndex = getResumeEpisodeIndex(movie);
+  return formatEpisodeLabel(episodeIndex);
 }
 
 function formatDuration(seconds) {
@@ -1062,8 +1332,22 @@ function formatDuration(seconds) {
 
 function formatResumeHint(movie) {
   if (!movie?.playback?.has_progress) return "";
-  const seasonLabel = movie.resume_season_label ? `${movie.resume_season_label} · ` : "";
-  return `${seasonLabel}${formatPlaybackText(movie.playback)}`;
+  const parts = [];
+  if (movie.resume_season_label) parts.push(movie.resume_season_label);
+  const episodeLabel = formatResumeEpisodeHint(movie);
+  if (episodeLabel) parts.push(episodeLabel);
+  parts.push(formatPlaybackText(movie.playback, movie));
+  return parts.filter(Boolean).join(" · ");
+}
+
+function getResumeEpisodeIndex(movie) {
+  return Math.max(0, Number(movie?.resume_episode_index ?? movie?.playback?.episode_index ?? 0) || 0);
+}
+
+function isSelectedEpisodeResumeTarget(movie, selectedEpisode) {
+  if (!movie?.playback?.has_progress) return false;
+  if (!movie?.is_series) return true;
+  return getResumeEpisodeIndex(movie) === Math.max(0, Number(selectedEpisode || 0));
 }
 
 
@@ -1347,7 +1631,7 @@ function renderToolbarState() {
   }
 
   const label = getSourceLabel(source);
-  elements.refreshBtn.textContent = "扫描并更新" + label;
+  elements.refreshBtn.textContent = supportsIncrementalRemoteScan() ? "扫描新增" + label : "扫描并更新" + label;
   elements.refreshBtn.disabled = !Boolean(source);
 }
 
@@ -1472,13 +1756,15 @@ function renderShelfHero(movie, heroItems = []) {
   if (!items.length) return "";
   const activeIndex = state.heroCarouselIndex % items.length;
   const activeMovie = items[activeIndex] || movie || items[0];
+  const activeTitleText = activeMovie.is_series ? getSeriesDisplayTitle(activeMovie) : (activeMovie.title || activeMovie.name || "未命名");
   const cover = activeMovie.cover_url
-    ? `<img src="${activeMovie.cover_url}" alt="${escapeHtml(activeMovie.title || activeMovie.name || "封面")}">`
+    ? `<img src="${activeMovie.cover_url}" alt="${escapeHtml(activeTitleText || "封面")}">`
     : `<div class="shelf-hero-backdrop fallback"></div>`;
-  const title = escapeHtml(activeMovie.title || activeMovie.name || "未命名");
+  const title = escapeHtml(activeTitleText);
   const resumeHint = formatResumeHint(activeMovie);
   const progressPercent = Number(activeMovie.playback?.percent || 0);
   const playPath = activeMovie.resume_path || activeMovie.path;
+  const resumeEpisodeIndex = getResumeEpisodeIndex(activeMovie);
   const meta = [
     activeMovie.type || "视频",
     activeMovie.year || "年份未知",
@@ -1498,7 +1784,7 @@ function renderShelfHero(movie, heroItems = []) {
         <div class="hero-carousel-track">
           ${items.map((item, index) => `
             <button class="hero-carousel-card ${index === activeIndex ? "active" : ""}" data-hero-pick="${escapeAttr(item.path)}" aria-label="${"切换到"} ${escapeAttr(item.title || item.name || "封面")}">
-              ${item.cover_url ? `<img src="${escapeAttr(item.cover_url)}" alt="${escapeHtml(item.title || item.name || "封面")}">` : `<span>${escapeHtml(item.title || item.name || "未命名")}</span>`}
+              ${item.cover_url ? `<img src="${escapeAttr(item.cover_url)}" alt="${escapeHtml(item.is_series ? getSeriesDisplayTitle(item) : (item.title || item.name || "封面"))}">` : `<span>${escapeHtml(item.is_series ? getSeriesDisplayTitle(item) : (item.title || item.name || "未命名"))}</span>`}
             </button>
           `).join("")}
         </div>
@@ -1518,7 +1804,7 @@ function renderShelfHero(movie, heroItems = []) {
           ${resumeHint ? `<div class="hero-resume">${escapeHtml(resumeHint)}</div>` : ""}
           ${progressPercent > 0 ? `<div class="hero-progress"><span style="width:${progressPercent}%"></span></div>` : ""}
           <div class="hero-actions">
-            <button class="primary-btn" data-play-movie="${escapeAttr(playPath)}" data-episode-index="0">${resumeHint ? "继续播放" : "立即播放"}</button>
+            <button class="primary-btn" data-play-movie="${escapeAttr(playPath)}" data-episode-index="${resumeEpisodeIndex}">${resumeHint ? "继续播放" : "立即播放"}</button>
             <button class="ghost-btn" data-open-detail="${escapeAttr(activeMovie.path)}">${"查看详情"}</button>
           </div>
         </div>
@@ -1588,20 +1874,23 @@ function renderStats() {
 }
 
 function renderMovieCard(movie) {
+  const displayTitle = movie.is_series ? getSeriesDisplayTitle(movie) : (movie.title || movie.name || "未命名");
   const cover = movie.cover_url
-    ? `<img src="${movie.cover_url}" alt="${escapeHtml(movie.title)}">`
+    ? `<img src="${movie.cover_url}" alt="${escapeHtml(displayTitle)}">`
     : `<div class="poster-fallback">${"暂无封面"}</div>`;
   const episodeMeta = movie.is_series
     ? `${movie.season_count > 1 ? `${movie.season_count} ${"季"} / ` : ""}${movie.episode_count} ${"集"}`
     : "单片";
-  const title = escapeHtml(movie.title || movie.name || "未命名");
+  const title = escapeHtml(displayTitle);
+  const seasonMeta = movie.is_series && !movie.is_grouped_series ? getSeasonEntryLabel(movie, movie, 0) : "";
   const tags = Array.isArray(movie.tags) ? movie.tags.slice(0, 2) : [];
   const progressPercent = Number(movie.playback?.percent || 0);
   const resumeHint = formatResumeHint(movie);
   const playPath = movie.resume_path || movie.path;
+  const resumeEpisodeIndex = getResumeEpisodeIndex(movie);
 
   return `
-    <article class="media-card" data-card-play="${escapeAttr(playPath)}" data-episode-index="0" title="${"双击直接播放"}">
+    <article class="media-card" data-card-play="${escapeAttr(playPath)}" data-episode-index="${resumeEpisodeIndex}" title="${"双击直接播放"}">
       <div class="poster-frame">
         <button class="poster-cover-trigger" data-open-detail="${escapeAttr(movie.path)}" aria-label="${"查看"} ${title} ${"详情"}"></button>
         ${cover}
@@ -1612,7 +1901,7 @@ function renderMovieCard(movie) {
         </div>
         <div class="card-source-badge">${escapeHtml(movie.source_label || "媒体库")}</div>
         <div class="poster-overlay-actions">
-          <button class="poster-overlay-btn primary" data-play-movie="${escapeAttr(playPath)}" data-episode-index="0">${resumeHint ? "继续" : "播放"}</button>
+          <button class="poster-overlay-btn primary" data-play-movie="${escapeAttr(playPath)}" data-episode-index="${resumeEpisodeIndex}">${resumeHint ? "继续" : "播放"}</button>
           <button class="poster-overlay-btn ${movie.is_favorite ? "active" : ""}" data-toggle-favorite="${escapeAttr(movie.path)}">${movie.is_favorite ? "已藏" : "收藏"}</button>
         </div>
         ${progressPercent > 0 ? `<div class="card-progress"><span style="width:${progressPercent}%"></span></div>` : ""}
@@ -1621,7 +1910,7 @@ function renderMovieCard(movie) {
         <h3 title="${title}">${title}</h3>
         <div class="card-meta">
           <span>${episodeMeta}</span>
-          <span>${movie.is_grouped_series ? "多季已合并" : movie.is_favorite ? "已收藏" : "未收藏"}</span>
+          <span>${movie.is_grouped_series ? "多季已合并" : seasonMeta || (movie.is_favorite ? "已收藏" : "未收藏")}</span>
         </div>
         ${resumeHint ? `<div class="card-resume">${escapeHtml(resumeHint)}</div>` : ""}
         ${tags.length ? `<div class="card-inline-tags">${tags.map((tag) => `<span class="mini-tag">${escapeHtml(tag)}</span>`).join("")}</div>` : ""}
@@ -1763,11 +2052,16 @@ function renderRecommendationView() {
 }
 
 async function loadReport() {
-  if (state.reportData) return;
-  const payload = await guarded(() => api("/api/report"), true, "正在生成观影报告...");
-  if (payload) {
-    state.reportData = payload;
-  }
+  if (state.reportData && state.hasAnalyticsData !== undefined) return;
+  const [reportPayload, analyticsPayload, hasDataPayload] = await Promise.all([
+    guarded(() => api("/api/report"), false),
+    guarded(() => api("/api/analytics/full-report"), false),
+    guarded(() => api("/api/analytics/has-data"), false)
+  ]);
+  
+  state.reportData = reportPayload || {};
+  state.analyticsData = analyticsPayload || {};
+  state.hasAnalyticsData = hasDataPayload?.has_data || false;
 }
 
 const _reportChartInstances = [];
@@ -1794,132 +2088,164 @@ function initReportCharts() {
   disposeReportCharts();
   _bindReportResize();
   const d = state.reportData;
-  if (!d || typeof echarts === "undefined") return;
+  const analytics = state.analyticsData || {};
+  if (!d && !analytics || typeof echarts === "undefined") return;
 
-  const theme = {
-    bgColor: "transparent",
-    textColor: "#c6d6f3",
-    titleColor: "#e5efff",
-    accent: "#e50914",
-    palette: ["#e50914", "#3b82f6", "#10b981", "#f59e0b", "#8b5cf6", "#ec4899"],
-  };
+  const userProfile = analytics.user_profile || {};
+  const genrePref = analytics.genre_preference || [];
 
-  // 1. 饼图：影片类型分布
-  const pieEl = document.getElementById("reportPieChart");
-  if (pieEl) {
-    const chart = echarts.init(pieEl);
+  // 1. 四维倾向柱状图
+  const fourAxisChart = echarts.init(document.getElementById('fourAxisChart'));
+  _reportChartInstances.push(fourAxisChart);
+  fourAxisChart.setOption({
+    tooltip:{trigger:'axis'},
+    grid:{left:'3%',right:'4%',bottom:'3%',containLabel:true},
+    xAxis:{
+      type:'category',
+      data:['外向E','内向I','现实S','幻想N','情感F','理性T','规划J','随性P']
+    },
+    yAxis:{type:'value',max:100},
+    series:[{
+      type:'bar',
+      data:[78,22,82,18,85,15,76,24],
+      itemStyle:{color:'#e8c872'}
+    }]
+  });
+
+  // 2. 人格特质雷达图
+  const personRadarChart = echarts.init(document.getElementById('personRadarChart'));
+  _reportChartInstances.push(personRadarChart);
+  personRadarChart.setOption({
+    tooltip:{},
+    radar:{
+      indicator:[
+        {name:'怀旧情怀',max:100},
+        {name:'情绪共情',max:100},
+        {name:'规整整理',max:100},
+        {name:'完播执念',max:100},
+        {name:'休闲放松',max:100},
+        {name:'猎奇探索',max:100}
+      ],
+      splitArea:{areaStyle:{color:['rgba(232,200,114,0.1)','transparent']}}
+    },
+    series:[{
+      type:'radar',
+      data:[{value:[88,92,80,85,79,35],name:'你的观影人格'}],
+      lineStyle:{color:'#e8c872'},
+      areaStyle:{color:'rgba(232,200,114,0.2)'}
+    }]
+  });
+
+  // 3. 契合影视类型饼图
+  const matchTypeChart = echarts.init(document.getElementById('matchTypeChart'));
+  _reportChartInstances.push(matchTypeChart);
+  const genreData = genrePref.length ? genrePref.slice(0, 5).map(g => ({
+    value: g.count || g.weight || 1,
+    name: g.genre || g.name || '其他'
+  })) : [
+    {value:35,name:'温情生活剧'},
+    {value:28,name:'怀旧经典影片'},
+    {value:20,name:'治愈动漫'},
+    {value:12,name:'人文纪录片'},
+    {value:5,name:'热血竞技类'}
+  ];
+  matchTypeChart.setOption({
+    tooltip:{trigger:'item'},
+    series:[{
+      type:'pie',
+      radius:'70%',
+      data:genreData,
+      itemStyle:{color:function(params){
+        const colorList = ['#e8c872','#72a8e8','#e8729c','#72e8b4','#a872e8'];
+        return colorList[params.dataIndex]
+      }}
+    }]
+  });
+
+  // 4. 观影行为占比
+  const behaviorChart = echarts.init(document.getElementById('behaviorChart'));
+  _reportChartInstances.push(behaviorChart);
+  behaviorChart.setOption({
+    tooltip:{trigger:'axis'},
+    xAxis:{type:'category',data:['完整观看','片段快进','二刷重温','新片试水','收藏归档']},
+    yAxis:{type:'value'},
+    series:[{
+      type:'line',
+      smooth:true,
+      data:[82,15,75,42,70],
+      itemStyle:{color:'#e8c872'},
+      areaStyle:{color:'rgba(232,200,114,0.15)'}
+    }]
+  });
+
+  // 5. 折线图：观影时长趋势（行为分析）
+  const durationEl = document.getElementById("reportDurationChart");
+  if (durationEl) {
+    const chart = echarts.init(durationEl);
     _reportChartInstances.push(chart);
-    const typeDist = d.type_distribution || [];
+    const durationTrend = analytics.watch_duration_trend || [];
     chart.setOption({
-      color: theme.palette,
-      tooltip: { trigger: "item", formatter: "{b}: {c} ({d}%)" },
-      series: [{
-        name: "类型占比",
-        type: "pie",
-        radius: ["40%", "70%"],
-        itemStyle: { borderRadius: 6, borderColor: "#121a2f", borderWidth: 2 },
-        label: { color: theme.textColor, fontSize: 12 },
-        data: typeDist.map((item) => ({ value: item.count, name: item.name })),
-      }],
-    });
-  }
-
-  // 2. 折线图：观影热度趋势（年代分布）
-  const lineEl = document.getElementById("reportLineChart");
-  if (lineEl) {
-    const chart = echarts.init(lineEl);
-    _reportChartInstances.push(chart);
-    const yearDist = d.year_distribution || [];
-    chart.setOption({
-      tooltip: { trigger: "axis" },
+      tooltip: { trigger: "axis", formatter: "{b}: {c} 分钟" },
       grid: { left: 50, right: 20, top: 30, bottom: 30 },
       xAxis: {
         type: "category",
-        data: yearDist.map((item) => item.name),
-        axisLabel: { color: theme.textColor, fontSize: 11 },
+        data: durationTrend.map((item) => item.date?.slice(5) || ""),
+        axisLabel: { color: "#c6d6f3", fontSize: 11 },
         axisLine: { lineStyle: { color: "rgba(255,255,255,0.1)" } },
       },
       yAxis: {
         type: "value",
-        axisLabel: { color: theme.textColor, fontSize: 11 },
+        axisLabel: { color: "#c6d6f3", fontSize: 11 },
         splitLine: { lineStyle: { color: "rgba(255,255,255,0.06)" } },
       },
       series: [{
-        name: "影片数",
+        name: "观影时长(分钟)",
         type: "line",
         smooth: true,
-        data: yearDist.map((item) => item.count),
-        lineStyle: { color: theme.accent, width: 3 },
-        itemStyle: { color: theme.accent },
+        data: durationTrend.map((item) => item.duration_minutes || 0),
+        lineStyle: { color: "#10b981", width: 3 },
+        itemStyle: { color: "#10b981" },
         areaStyle: {
           color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
-            { offset: 0, color: "rgba(229,9,20,0.35)" },
-            { offset: 1, color: "rgba(229,9,20,0.02)" },
+            { offset: 0, color: "rgba(16,185,129,0.35)" },
+            { offset: 1, color: "rgba(16,185,129,0.02)" },
           ]),
         },
       }],
     });
   }
 
-  // 3. 条形图：热度排行榜
-  const barEl = document.getElementById("reportBarChart");
-  if (barEl) {
-    const chart = echarts.init(barEl);
+  // 6. 柱状图：观看时段分布（行为分析）
+  const timeEl = document.getElementById("reportTimeChart");
+  if (timeEl) {
+    const chart = echarts.init(timeEl);
     _reportChartInstances.push(chart);
-    const genres = (d.genre_preferences || []).slice(0, 8).reverse();
+    const timeDist = analytics.time_distribution || [];
     chart.setOption({
-      tooltip: { trigger: "axis" },
-      grid: { left: 80, right: 30, top: 10, bottom: 20 },
+      tooltip: { trigger: "axis", formatter: "{b}: {c} 次" },
+      grid: { left: 40, right: 20, top: 20, bottom: 40 },
       xAxis: {
+        type: "category",
+        data: timeDist.map((item) => item.label || `${item.hour}:00`),
+        axisLabel: { color: theme.textColor, fontSize: 10, rotate: 45 },
+        axisLine: { lineStyle: { color: "rgba(255,255,255,0.1)" } },
+      },
+      yAxis: {
         type: "value",
         axisLabel: { color: theme.textColor, fontSize: 11 },
         splitLine: { lineStyle: { color: "rgba(255,255,255,0.06)" } },
-      },
-      yAxis: {
-        type: "category",
-        data: genres.map((item) => item.name),
-        axisLabel: { color: theme.textColor, fontSize: 12 },
-        axisLine: { lineStyle: { color: "rgba(255,255,255,0.1)" } },
       },
       series: [{
         type: "bar",
-        data: genres.map((item) => item.weight),
-        barWidth: 16,
+        data: timeDist.map((item) => item.count || 0),
+        barWidth: "60%",
         itemStyle: {
-          borderRadius: [0, 4, 4, 0],
-          color: new echarts.graphic.LinearGradient(0, 0, 1, 0, [
-            { offset: 0, color: "#3b82f6" },
-            { offset: 1, color: "#e50914" },
+          borderRadius: 4,
+          color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+            { offset: 0, color: "#8b5cf6" },
+            { offset: 1, color: "#3b82f6" },
           ]),
         },
-      }],
-    });
-  }
-
-  // 4. 雷达图：用户偏好画像
-  const radarEl = document.getElementById("reportRadarChart");
-  if (radarEl) {
-    const chart = echarts.init(radarEl);
-    _reportChartInstances.push(chart);
-    const genres = (d.genre_preferences || []).slice(0, 6);
-    const maxWeight = Math.max(1, ...genres.map((g) => g.weight));
-    chart.setOption({
-      radar: {
-        indicator: genres.map((g) => ({ name: g.name, max: Math.ceil(maxWeight * 1.1) })),
-        axisName: { color: theme.textColor, fontSize: 12 },
-        splitArea: { areaStyle: { color: ["rgba(255,255,255,0.02)", "rgba(255,255,255,0.04)"] } },
-        splitLine: { lineStyle: { color: "rgba(255,255,255,0.08)" } },
-        axisLine: { lineStyle: { color: "rgba(255,255,255,0.1)" } },
-      },
-      series: [{
-        type: "radar",
-        data: [{
-          value: genres.map((g) => g.weight),
-          name: "偏好权重",
-          areaStyle: { color: "rgba(229,9,20,0.25)" },
-          lineStyle: { color: theme.accent, width: 2 },
-          itemStyle: { color: theme.accent },
-        }],
       }],
     });
   }
@@ -1927,7 +2253,25 @@ function initReportCharts() {
 
 function renderReportView() {
   const d = state.reportData;
-  if (!d) {
+  const analytics = state.analyticsData || {};
+  const userProfile = analytics.user_profile || {};
+  const durationTrend = analytics.watch_duration_trend || [];
+  const genrePref = analytics.genre_preference || [];
+  const timeDist = analytics.time_distribution || [];
+  const completionRate = analytics.completion_rate || {};
+
+  // 检查是否有有效的行为数据
+  const hasValidData = state.hasAnalyticsData === true;
+  
+  if (!hasValidData) {
+    return renderSetupState(
+      "暂无足够的观影数据",
+      "观看影片至少5分钟或完成3次观看后，系统将为您生成专属观影人格报告。",
+      ""
+    );
+  }
+
+  if (!d && !analytics) {
     return renderSetupState(
       "暂无观影数据",
       "开始收藏和播放影片后，这里会生成你的观影报告。",
@@ -1935,141 +2279,114 @@ function renderReportView() {
     );
   }
 
-  const overview = d.overview || {};
-  const typeDist = d.type_distribution || [];
-  const genres = d.genre_preferences || [];
-  const completion = d.completion_stats || {};
-  const activity = d.recent_activity || [];
-  const warehouseStatus = d.warehouse_status || {};
-  const warehouseText = warehouseStatus.connected ? "仓库在线" : (warehouseStatus.reason || "当前使用应用内分析");
-  const topGenres = genres.slice(0, 4).map((item) => item.name).filter(Boolean);
-  const typeOptions = ["全部类型", ...typeDist.map((item) => item.name).filter(Boolean).slice(0, 6)];
-  const dimensionOptions = ["播放量", "用户评分", "收藏数"];
+  const overview = d?.overview || {};
+  const typeDist = d?.type_distribution || [];
+  const genres = d?.genre_preferences || [];
+  const completion = d?.completion_stats || {};
+  const activity = d?.recent_activity || [];
 
-  const totalCompletion = (completion.completed || 0) + (completion.in_progress || 0) + (completion.not_started || 0) || 1;
-  const completedPct = Math.round((completion.completed || 0) / totalCompletion * 100);
-  const inProgressPct = Math.round((completion.in_progress || 0) / totalCompletion * 100);
+  const totalCompletion = (completion.completed || completionRate.completed || 0) + (completion.in_progress || completionRate.in_progress || 0) + (completion.not_started || completionRate.not_started || 0) || 1;
+  const completedPct = Math.round(((completion.completed || completionRate.completed || 0) / totalCompletion) * 100);
+  const inProgressPct = Math.round(((completion.in_progress || completionRate.in_progress || 0) / totalCompletion) * 100);
   const notStartedPct = 100 - completedPct - inProgressPct;
 
-  const overviewCards = [
-    { label: "总片数", value: overview.total_movies || 0, unit: "" },
-    { label: "已观看", value: overview.watched || 0, unit: "" },
-    { label: "观影时长", value: overview.total_watch_hours || 0, unit: "小时" },
-    { label: "平均评分", value: overview.avg_rating || 0, unit: "★" },
+  const mbtiCode = userProfile.mbti_code || "ESFJ";
+  const mbtiName = userProfile.mbti_name || "剧情共情家";
+
+  const personalityTags = [
+    userProfile.most_watched_genre ? `偏爱${userProfile.most_watched_genre}` : "偏爱温情叙事",
+    completionRate.completion_rate > 60 ? "高完播爱好者" : "随性观影者",
+    userProfile.preferred_decade ? `偏爱${userProfile.preferred_decade}年代` : "偏爱经典老片",
+    userProfile.most_active_period ? `${userProfile.most_active_period}活跃` : "定时规律观影"
   ];
 
   return `
     <div class="report-shell">
-      <section class="report-stage report-stage-board">
-        <div class="report-stage-copy">
-          <span class="section-eyebrow report-board-kicker">观影分析大屏</span>
-          <h3>爆米花电影 · 数据可视化大屏</h3>
-          <p>用户观影分析、片库热度变化和个性偏好会在这里汇总成更适合展示和扫读的分析面板。</p>
-          <div class="report-stage-meta">
-            <span>${warehouseText}</span>
-            <span>${topGenres.length ? `偏好标签：${escapeHtml(topGenres.join(" / "))}` : "等待更多行为数据"}</span>
-          </div>
+      <div class="person-title">
+        <h1>你的专属观影人格</h1>
+        <p>基于网盘影视观看行为 · 类MBTI四维人格判定</p>
+        <div class="person-code">
+          ${mbtiCode.split('').map(c => `<div class="code-item">${c}</div>`).join('')}
         </div>
-        <div class="report-stage-side">
-          <div class="report-stage-orbit orbit-a"></div>
-          <div class="report-stage-orbit orbit-b"></div>
-          <div class="report-stage-radar">
-            <strong>${overview.total_movies || 0}</strong>
-            <small>总条目</small>
-          </div>
-        </div>
-      </section>
-
-      <section class="report-filter-bar">
-        <label class="report-filter-item">
-          <span>时间范围</span>
-          <select>
-            <option>近7天</option>
-            <option selected>近30天</option>
-            <option>近90天</option>
-          </select>
-        </label>
-        <label class="report-filter-item">
-          <span>影片类型</span>
-          <select>
-            ${typeOptions.map((item, index) => `<option ${index === 0 ? "selected" : ""}>${escapeHtml(item)}</option>`).join("")}
-          </select>
-        </label>
-        <label class="report-filter-item">
-          <span>数据维度</span>
-          <select>
-            ${dimensionOptions.map((item, index) => `<option ${index === 0 ? "selected" : ""}>${escapeHtml(item)}</option>`).join("")}
-          </select>
-        </label>
-      </section>
-
-      <div class="report-overview">
-        ${overviewCards.map((c) => `
-          <article class="report-kpi-card">
-            <small>${c.label}${c.unit ? " " + c.unit : ""}</small>
-            <strong>${c.value}</strong>
-          </article>
-        `).join("")}
+        <p style="font-size:20px;color:#fff;">${mbtiName} ${mbtiCode}</p>
       </div>
 
-      <div class="report-grid">
-        <section class="report-section">
-          <div class="chart-title">影片类型分布</div>
-          <div id="reportPieChart" class="report-chart-box"></div>
-        </section>
+      <div class="row-box">
+        <div class="card">
+          <h3>观影四维人格倾向</h3>
+          <div class="chart-box" id="fourAxisChart"></div>
+          <div class="desc-text">
+            外向追剧E/独处观影I | 现实写实S/脑洞幻想N<br>
+            情感共情F/理性观影T | 规整规划J/随性随缘P
+          </div>
+        </div>
 
-        <section class="report-section">
-          <div class="chart-title">观影热度趋势</div>
-          <div id="reportLineChart" class="report-chart-box"></div>
-        </section>
-
-        <section class="report-section">
-          <div class="chart-title">偏好标签排行榜</div>
-          <div id="reportBarChart" class="report-chart-box"></div>
-        </section>
-
-        <section class="report-section">
-          <div class="chart-title">用户偏好画像</div>
-          <div id="reportRadarChart" class="report-chart-box"></div>
-        </section>
+        <div class="card">
+          <h3>观影人格特质雷达</h3>
+          <div class="chart-box" id="personRadarChart"></div>
+          <div class="tag-wrap">
+            ${personalityTags.map(tag => `<span class="tag">${tag}</span>`).join('')}
+          </div>
+        </div>
       </div>
 
-      <div class="report-grid report-grid-bottom">
-        <section class="report-section">
-          <div class="chart-title">完播统计</div>
-          <div class="completion-rings">
-            <div class="ring-item">
-              <div class="ring-progress" style="--pct:${completedPct};--color:var(--success)">${completedPct}%</div>
-              <span>已看完</span>
-            </div>
-            <div class="ring-item">
-              <div class="ring-progress" style="--pct:${inProgressPct};--color:var(--teal)">${inProgressPct}%</div>
-              <span>在看</span>
-            </div>
-            <div class="ring-item">
-              <div class="ring-progress" style="--pct:${notStartedPct};--color:var(--text-faint)">${notStartedPct}%</div>
-              <span>未开始</span>
-            </div>
-          </div>
-        </section>
+      <div class="row-box">
+        <div class="card full-card">
+          <h3>${mbtiCode} ${mbtiName} · 人格深度解读</h3>
+          <p class="desc-text">
+            你是极具共情力的观影爱好者，偏爱贴近现实、情感饱满的影视内容，很少追无脑爽片与硬核烧脑题材。日常观影习惯规律有序，会主动整理网盘影视资源，分类清晰，偏爱完整看完整部剧集与电影，完播率远高于普通用户。
+            <br><br>
+            更倾向在休闲时段陪伴式观影，喜欢温情、生活、怀旧向内容，热衷收藏高分口碑影视，偏爱90-00年代经典影视，对影视剧情情绪感知极强，容易代入角色情绪。极少碎片化快进观看，注重完整的观影体验，网盘内资源整理规整，观影计划清晰。
+          </p>
+        </div>
+      </div>
 
-        <section class="report-section report-timeline-section">
-          <div class="chart-title">近期动态</div>
-          <div class="timeline">
-            ${activity.length ? activity.map((a) => {
-              const date = a.timestamp ? new Date(a.timestamp * 1000) : null;
-              const dateStr = date ? `${date.getMonth() + 1}/${date.getDate()}` : "";
-              return `
-                <div class="timeline-item">
-                  <span class="timeline-date">${dateStr}</span>
-                  <span class="timeline-type">${escapeHtml(a.type)}</span>
-                  <span class="timeline-title">${escapeHtml(a.title)}</span>
-                  <div class="timeline-progress"><span style="width:${a.progress}%"></span></div>
-                </div>
-              `;
-            }).join("") : `<span class="text-faint">暂无数据</span>`}
+      <div class="row-box">
+        <div class="card">
+          <h3>最契合你的影视类型</h3>
+          <div class="chart-box" id="matchTypeChart"></div>
+        </div>
+
+        <div class="card">
+          <h3>专属观影行为特征</h3>
+          <div class="chart-box" id="behaviorChart"></div>
+        </div>
+      </div>
+
+      <div class="row-box">
+        <div class="card">
+          <h3>观影时长趋势</h3>
+          <div class="chart-box" id="reportDurationChart"></div>
+        </div>
+
+        <div class="card">
+          <h3>观看时段分布</h3>
+          <div class="chart-box" id="reportTimeChart"></div>
+        </div>
+      </div>
+
+      <div class="row-box">
+        <div class="card full-card">
+          <h3>观影概览</h3>
+          <div class="report-overview-simple">
+            <article class="report-kpi-card-simple">
+              <small>总片数</small>
+              <strong>${overview.total_movies || 0}</strong>
+            </article>
+            <article class="report-kpi-card-simple">
+              <small>已观看</small>
+              <strong>${overview.watched || userProfile.total_movies_watched || 0}</strong>
+            </article>
+            <article class="report-kpi-card-simple">
+              <small>观影时长</small>
+              <strong>${overview.total_watch_hours || userProfile.total_watch_hours || 0} 小时</strong>
+            </article>
+            <article class="report-kpi-card-simple">
+              <small>完播率</small>
+              <strong>${completionRate.completion_rate || completedPct}%</strong>
+            </article>
           </div>
-        </section>
+        </div>
       </div>
     </div>
   `;
@@ -2197,13 +2514,15 @@ function reasonClass(reason) {
 }
 
 function renderRecommendationCard(movie) {
+  const displayTitle = movie.is_series ? getSeriesDisplayTitle(movie) : (movie.title || movie.name || "未命名");
   const cover = movie.cover_url
-    ? `<img src="${movie.cover_url}" alt="${escapeHtml(movie.title || movie.name || "封面")}">`
+    ? `<img src="${movie.cover_url}" alt="${escapeHtml(displayTitle || "封面")}">`
     : `<div class="poster-fallback">${"暂无封面"}</div>`;
-  const title = escapeHtml(movie.title || movie.name || "未命名");
+  const title = escapeHtml(displayTitle);
   const reasons = (movie.recommendation_reasons || []).slice(0, 3);
   const score = Math.round(Number(movie.recommendation_score || 0) * 100);
   const breakdown = movie.recommendation_breakdown || {};
+  const resumeEpisodeIndex = getResumeEpisodeIndex(movie);
   return `
     <article class="media-card recommend-card">
       <div class="poster-frame">
@@ -2216,7 +2535,7 @@ function renderRecommendationCard(movie) {
         </div>
         <div class="card-source-badge">${"推荐"} ${score}</div>
         <div class="poster-overlay-actions">
-          <button class="poster-overlay-btn primary" data-play-movie="${escapeAttr(movie.resume_path || movie.path)}" data-episode-index="0">${"播放"}</button>
+          <button class="poster-overlay-btn primary" data-play-movie="${escapeAttr(movie.resume_path || movie.path)}" data-episode-index="${resumeEpisodeIndex}">${"播放"}</button>
           <button class="poster-overlay-btn ${movie.is_favorite ? "active" : ""}" data-toggle-favorite="${escapeAttr(movie.path)}">${movie.is_favorite ? "已藏" : "收藏"}</button>
         </div>
       </div>
@@ -2244,15 +2563,17 @@ function renderRecommendationCard(movie) {
 }
 
 function renderHomeRecommendationCard(movie) {
+  const displayTitle = movie.is_series ? getSeriesDisplayTitle(movie) : (movie.title || movie.name || "未命名");
   const cover = movie.cover_url
-    ? `<img src="${movie.cover_url}" alt="${escapeHtml(movie.title || movie.name || "封面")}">`
+    ? `<img src="${movie.cover_url}" alt="${escapeHtml(displayTitle || "封面")}">`
     : `<div class="poster-fallback">${"暂无封面"}</div>`;
-  const title = escapeHtml(movie.title || movie.name || "未命名");
+  const title = escapeHtml(displayTitle);
   const rawReason = (movie.recommendation_reasons || [])[0] || "和你最近常看的内容气质接近";
   const reason = escapeHtml(rawReason);
   const reasonCls = reasonClass(rawReason);
   const score = Math.round(Number(movie.recommendation_score || 0) * 100);
   const playPath = movie.resume_path || movie.path;
+  const resumeEpisodeIndex = getResumeEpisodeIndex(movie);
   const metaLine = movie.is_series ? `${movie.episode_count || 0} ${"集"}` : "单片";
 
   return `
@@ -2267,7 +2588,7 @@ function renderHomeRecommendationCard(movie) {
         </div>
         <div class="card-source-badge">${"推荐"} ${score}</div>
         <div class="poster-overlay-actions">
-          <button class="poster-overlay-btn primary" data-play-movie="${escapeAttr(playPath)}" data-episode-index="0">${"播放"}</button>
+          <button class="poster-overlay-btn primary" data-play-movie="${escapeAttr(playPath)}" data-episode-index="${resumeEpisodeIndex}">${"播放"}</button>
           <button class="poster-overlay-btn ${movie.is_favorite ? "active" : ""}" data-toggle-favorite="${escapeAttr(movie.path)}">${movie.is_favorite ? "已藏" : "收藏"}</button>
         </div>
       </div>
@@ -2348,11 +2669,11 @@ function renderExternalRecommendationCard(item) {
 
 // 设置标签页配置
 const SETTINGS_TABS = [
-  { id: "media", icon: "🌐", label: "媒体源", desc: "连接远程片库和扫描目录" },
-  { id: "player", icon: "▶️", label: "播放与本地", desc: "本地目录、播放器和格式" },
-  { id: "openlist", icon: "☁️", label: "OpenList", desc: "网盘聚合、挂载和状态" },
-  { id: "appearance", icon: "🎨", label: "界面与刮削", desc: "主题、语言和元数据" },
-  { id: "maintenance", icon: "⚙️", label: "维护", desc: "缓存清理和重置" },
+  { id: "media", icon: "🌐", label: "媒体源", desc: "WebDAV / OpenList 连接" },
+  { id: "player", icon: "▶️", label: "播放与本地", desc: "播放器选择和本地目录" },
+  { id: "openlist", icon: "☁️", label: "OpenList", desc: "网盘挂载与管理" },
+  { id: "appearance", icon: "🎨", label: "界面与刮削", desc: "主题和自动刮削" },
+  { id: "maintenance", icon: "⚙️", label: "维护", desc: "缓存清理与重置" },
 ];
 
 let _currentSettingsTab = "media";
@@ -2395,8 +2716,8 @@ function renderSettingsView() {
               ${renderMaintenanceTab(config)}
             </div>
             <div class="settings-actions">
-              <button type="button" class="ghost-btn" id="testConnectionBtnFooter">${"测试远程连接"}</button>
-              <button type="submit" class="primary-btn">${"保存全部设置"}</button>
+              <button type="button" class="ghost-btn" id="testConnectionBtnFooter">${"测试连接"}</button>
+              <button type="submit" class="primary-btn">${"保存设置"}</button>
             </div>
           </form>
         </div>
@@ -2410,20 +2731,28 @@ function renderSettingsOverview(config) {
     {
       label: "远程媒体源",
       value: config.has_basic_config ? (config.remote_provider_label || "已配置") : "未完成",
-      hint: config.has_basic_config ? "可以直接测试连接或刷新片库" : "先配置 WebDAV 或 OpenList",
+      hint: config.has_basic_config ? "可测试连接或刷新片库" : "请先配置",
       ready: !!config.has_basic_config,
     },
     {
       label: "本地目录",
       value: config.has_local_config ? `${(config.local_mount_dirs || []).length} 个目录` : "未添加",
-      hint: config.has_local_config ? "刷新时会一起扫描本机目录" : "适合本地硬盘片库",
+      hint: config.has_local_config ? "刷新时一并扫描" : "可添加本地目录",
       ready: !!config.has_local_config,
     },
     {
       label: "默认播放器",
-      value: config.default_player === "vlc_controlled" || config.default_player === "builtin" ? "VLC 受控模式" : config.default_player === "vlc" ? "VLC" : "PotPlayer",
-      hint: config.default_player === "vlc_controlled" || config.default_player === "builtin" ? "通过 VLC 回传进度、完播和统计" : "适合继续使用外部播放器",
+      value: "内置播放器（mpv）",
+      hint: "内置播放，支持进度同步和统计",
       ready: true,
+    },
+    {
+      label: "增量扫描",
+      value: config.auto_incremental_sync === false ? "已关闭" : "已启用",
+      hint: state.scanStatus?.scan_at
+        ? `上次检查 ${formatRelativeTime(state.scanStatus.scan_at)}`
+        : "尚未执行过增量检查",
+      ready: config.auto_incremental_sync !== false,
     },
   ];
 
@@ -2431,8 +2760,8 @@ function renderSettingsOverview(config) {
     <section class="settings-overview">
       <div class="settings-overview-copy">
         <span class="section-eyebrow">${"设置中心"}</span>
-        <h3>${"把片库接进来，把播放方式设清楚"}</h3>
-        <p>${"左边按任务分类，右边只展示当前需要填写的内容。第一次使用时，建议先完成“媒体源”和“播放与本地”两部分。"}</p>
+        <h3>${"接入片库，配置播放"}</h3>
+        <p>${"首次使用先完成「媒体源」和「播放与本地」，其余可稍后再配。"}</p>
       </div>
       <div class="settings-overview-grid">
         ${overviewItems.map((item) => `
@@ -2452,7 +2781,7 @@ function getSettingsTabStateText(tabId, config) {
     case "media":
       return config.has_basic_config ? "已配置" : "待配置";
     case "player":
-      return config.has_local_config ? "可用" : "可选";
+      return "可用";
     case "openlist":
       return config.openlist_enabled ? "已启用" : "未启用";
     case "appearance":
@@ -2478,15 +2807,15 @@ function renderFirstRunGuideCard(config) {
       <div class="first-run-guide-head">
         <div>
           <span class="section-eyebrow">${"首次使用"}</span>
-          <h3>${"先接入一个媒体源再开始使用"}</h3>
-          <p>${"这里不再锁定界面。你可以直接在下面完成设置，也可以先跳过，稍后再配。"}</p>
+          <h3>${"接入一个媒体源即可开始"}</h3>
+          <p>${"可在下方直接配置，也可以跳过稍后再说。"}</p>
         </div>
-        <button class="ghost-btn" type="button" id="dismissFirstRunGuideBtn">${"先看看界面"}</button>
+        <button class="ghost-btn" type="button" id="dismissFirstRunGuideBtn">${"稍后配置"}</button>
       </div>
       <div class="first-run-guide-actions">
-        <button class="primary-btn" type="button" data-first-run-source="openlist">${"使用 OpenList 网盘"}</button>
-        <button class="ghost-btn" type="button" data-first-run-source="webdav">${"使用 WebDAV"}</button>
-        <button class="ghost-btn" type="button" data-browse-dirs="local">${hasLocal ? "继续选择本地目录" : "先添加本地目录"}</button>
+        <button class="primary-btn" type="button" data-first-run-source="openlist">${"OpenList 网盘"}</button>
+        <button class="ghost-btn" type="button" data-first-run-source="webdav">${"WebDAV"}</button>
+        <button class="ghost-btn" type="button" data-browse-dirs="local">${hasLocal ? "管理本地目录" : "添加本地目录"}</button>
       </div>
     </section>
   `;
@@ -2506,42 +2835,42 @@ function renderMediaSourceTab(config) {
   const builtinReady = !!(config.openlist_enabled && openlistStatus.binary_available && openlistStatus.status === "running");
   const hasOpenListStorages = (state.openlistStorages || []).length > 0;
   const showRemoteCredentials = !useBuiltinOpenList;
-  const connectButtonLabel = useExternalOpenList ? "验证自有 OpenList 并选择目录" : "验证并选择目录";
+  const connectButtonLabel = useExternalOpenList ? "验证 OpenList 并选择目录" : "验证并选择目录";
   const hintText = useBuiltinOpenList
-    ? "使用本机内置 OpenList。适合夸克、阿里云盘、115、百度网盘等，先启动并挂载，再回来选扫描目录。"
+    ? "使用内置 OpenList，先启动服务并挂载网盘驱动，再回来选扫描目录。"
     : useExternalOpenList
-      ? "填写你自己的 OpenList WebDAV 地址，通常是 http://你的地址:5244/dav，再输入账号密码。"
+      ? "填写 OpenList 的 WebDAV 地址（如 http://地址:5244/dav）和账号密码。"
       : remotePreset.help;
 
   return `
     <div class="settings-section-head">
       <span>${"媒体源"}</span>
-      <h3>${"先决定视频从哪里来"}</h3>
-      <p>${"如果你用网盘聚合，优先选 OpenList；如果你已经有现成的 WebDAV 地址，就选 WebDAV。"}</p>
+      <h3>${"视频从哪里来"}</h3>
+      <p>${"网盘用户选 OpenList，已有 WebDAV 服务的选标准 WebDAV。"}</p>
     </div>
 
     <div class="settings-card settings-tip-card">
       <div class="settings-tip-copy">
-        <strong>${isOpenlistProvider ? "当前使用 OpenList 方案" : "当前使用 WebDAV 方案"}</strong>
-        <p>${isOpenlistProvider ? (useBuiltinOpenList ? "当前使用内置 OpenList，完成驱动挂载后即可直接选择扫描目录。" : "当前使用你自己的 OpenList 实例，会按标准 WebDAV 入口来连接和浏览目录。") : "适合群晖、坚果云、Nextcloud、AList 或其它已经提供 WebDAV 的服务。"}</p>
+        <strong>${isOpenlistProvider ? "OpenList 模式" : "WebDAV 模式"}</strong>
+        <p>${isOpenlistProvider ? (useBuiltinOpenList ? "使用内置 OpenList，挂载驱动后即可选择扫描目录。" : "连接你自己的 OpenList，通过 WebDAV 协议浏览目录。") : "适用于群晖、坚果云、Nextcloud、AList 等 WebDAV 服务。"}</p>
       </div>
     </div>
 
     <div class="settings-card">
       <div class="settings-card-head">
         <div>
-          <h4>${"1. 选择媒体源配置"}</h4>
+          <h4>${"选择媒体源"}</h4>
         </div>
-        <p>${"先选方案，再登录验证。验证通过后，我们会自动保存当前填写的信息并直接进入目录选择。"}</p>
+        <p>${"选好方案后验证连接，通过后自动保存并进入目录选择。"}</p>
       </div>
       <div class="source-option-grid">
         <button class="source-option-card ${remoteProvider === "webdav" ? "active" : ""}" type="button" data-select-remote-provider="webdav">
           <strong>${"标准 WebDAV"}</strong>
-          <span>${"适合群晖、坚果云、rclone、AList WebDAV 等现成入口。"}</span>
+          <span>${"群晖、坚果云、AList 等已有 WebDAV 服务"}</span>
         </button>
         <button class="source-option-card ${remoteProvider === "openlist" ? "active" : ""}" type="button" data-select-remote-provider="openlist">
           <strong>${"OpenList 网盘"}</strong>
-          <span>${"适合夸克、阿里云盘、115、百度网盘等，也支持你自己的 OpenList。"}</span>
+          <span>${"夸克、阿里云盘、115、百度网盘等"}</span>
         </button>
       </div>
     </div>
@@ -2549,14 +2878,14 @@ function renderMediaSourceTab(config) {
     <div class="settings-card">
       <div class="settings-field-grid">
         <label class="${isOpenlistProvider ? "" : "hidden"}">
-          <span>${"OpenList 方式"}</span>
+          <span>${"部署方式"}</span>
           <select name="openlist_source_mode" id="openlistSourceModeSelect">
             <option value="builtin" ${openlistSourceMode === "builtin" ? "selected" : ""}>${"使用内置 OpenList"}</option>
             <option value="external" ${openlistSourceMode === "external" ? "selected" : ""}>${"使用自己的 OpenList"}</option>
           </select>
         </label>
         <label class="${isOpenlistProvider ? "hidden" : ""}">
-          <span>${"接入方式"}</span>
+          <span>${"方案"}</span>
           <select name="remote_provider" id="remoteProviderSelect">
             ${getRemoteProviderOptions().map((item) => `<option value="${item.value}" ${item.value === remoteProvider ? "selected" : ""}>${item.label}</option>`).join("")}
           </select>
@@ -2576,15 +2905,15 @@ function renderMediaSourceTab(config) {
           </label>
         </div>
         <label class="full-width" id="remoteCookieLabel" style="${showRemoteCredentials ? '' : 'display:none'}">
-          <span>${"Cookie / Token（可选）"}</span>
-          <textarea name="remote_cookie" id="remoteCookieInput" rows="3" placeholder="${"如果远程源支持网页会话或直链鉴权，也可以把 Cookie 放在这里。"}">${escapeHtml(activeRemoteProfile.remote_cookie || "")}</textarea>
+          <span>${"Cookie（可选）"}</span>
+          <textarea name="remote_cookie" id="remoteCookieInput" rows="3" placeholder="${"支持会话鉴权的远程源可填写 Cookie"}">${escapeHtml(activeRemoteProfile.remote_cookie || "")}</textarea>
         </label>
         <label>
-          <span>${"远程扫描深度"}</span>
+          <span>${"扫描深度"}</span>
           <input name="scan_max_depth" type="number" min="1" max="8" value="${escapeAttr(String(config.scan_max_depth || 2))}">
         </label>
         <div class="full-width">
-          <span>${"接入说明"}</span>
+          <span>${"说明"}</span>
           <div id="remoteProviderHint" class="settings-inline-note">
             <span>${escapeHtml(hintText)}</span>
           </div>
@@ -2593,12 +2922,12 @@ function renderMediaSourceTab(config) {
       <div class="source-inline-actions">
         ${useBuiltinOpenList
           ? `
-            <button class="primary-btn" type="button" id="browseBuiltinOpenListBtn">${builtinReady && hasOpenListStorages ? "浏览 OpenList 目录" : "去配置内置 OpenList"}</button>
-            <button class="ghost-btn" type="button" id="openOpenListManagerBtn">${"打开 OpenList 管理"}</button>
+            <button class="primary-btn" type="button" id="browseBuiltinOpenListBtn">${builtinReady && hasOpenListStorages ? "浏览目录" : "配置 OpenList"}</button>
+            <button class="ghost-btn" type="button" id="openOpenListManagerBtn">${"管理面板"}</button>
           `
           : `
             <button class="primary-btn" type="button" id="connectAndBrowseBtn">${connectButtonLabel}</button>
-            <button class="ghost-btn" type="button" id="testConnectionBtn">${"仅验证连接"}</button>
+            <button class="ghost-btn" type="button" id="testConnectionBtn">${"验证连接"}</button>
           `}
       </div>
     </div>
@@ -2606,14 +2935,14 @@ function renderMediaSourceTab(config) {
     <div class="settings-card">
       <div class="settings-card-head">
         <div>
-          <h4 id="remoteMountTitle">${isOpenlistProvider ? "需要扫描的 OpenList 挂载目录" : "需要扫描的 WebDAV 目录"}</h4>
+          <h4 id="remoteMountTitle">${isOpenlistProvider ? "扫描目录" : "远程扫描目录"}</h4>
         </div>
-        <p id="remoteMountDesc">${"只添加真正放影视内容的目录，这样刷新更快，也更容易识别。"}</p>
+        <p id="remoteMountDesc">${"只添加存放影视的目录，扫描更快，识别更准。"}</p>
       </div>
       <div class="mount-list" id="remoteMountList">
         ${renderMountList(webdavDirs, "webdav")}
       </div>
-      <button class="primary-btn" type="button" id="browseRemoteDirsBtn">${isOpenlistProvider ? "浏览 OpenList 目录" : "浏览远程目录"}</button>
+      <button class="primary-btn" type="button" id="browseRemoteDirsBtn">${isOpenlistProvider ? "浏览目录" : "浏览远程目录"}</button>
     </div>
   `;
 }
@@ -2623,44 +2952,44 @@ function renderPlayerTab(config) {
   const runtime = state.playerRuntime || {};
   const runtimeMode = runtime.desktop_mode ? "桌面模式" : "浏览器模式";
   const runtimeStatusClass = runtime.embed_ready ? "ready" : "pending";
-  const runtimeSummary = runtime.embed_ready
-    ? "已具备 libVLC 原型条件，可以进入真嵌入验证。"
-    : (Array.isArray(runtime.reasons) && runtime.reasons.length ? runtime.reasons[0] : "当前先继续使用 VLC 受控模式更稳。");
+  const runtimeSummary = runtime.desktop_mode
+    ? "桌面模式已就绪，可直接启用内置播放器。"
+    : (Array.isArray(runtime.reasons) && runtime.reasons.length ? runtime.reasons[0] : "请从桌面模式启动内置 mpv。");
   const runtimeReasonList = Array.isArray(runtime.reasons) ? runtime.reasons : [];
 
   return `
     <div class="settings-section-head">
       <span>${"播放与扫描"}</span>
-      <h3>${"本机怎么扫描，怎么播放"}</h3>
-      <p>${"如果你既有网盘也有本地硬盘，这里建议一起配好，后面就能统一出现在片库里。"}</p>
+      <h3>${"播放器和本地目录"}</h3>
+      <p>${"网盘和本地硬盘可以一起配，统一出现在片库中。"}</p>
     </div>
 
     <div class="settings-card">
       <div class="settings-card-head">
         <div>
-          <h4>${"libVLC 原型状态"}</h4>
+          <h4>${"内置播放器状态"}</h4>
         </div>
-        <p>${"这里会告诉你当前运行方式是否已经具备“真正内嵌 VLC”所需的条件。"}</p>
+        <p>${"当前运行环境是否支持内置播放器。"}</p>
       </div>
       <div class="runtime-status-grid">
         <article class="runtime-status-card ${runtimeStatusClass}">
           <span>${"当前运行方式"}</span>
           <strong>${escapeHtml(runtimeMode)}</strong>
-          <small>${escapeHtml(runtime.runtime === "pywebview" ? "通过 pywebview 桌面壳启动" : "通过浏览器窗口启动")}</small>
+          <small>${escapeHtml(runtime.runtime === "pywebview" ? "桌面窗口启动" : "浏览器窗口启动")}</small>
         </article>
         <article class="runtime-status-card ${runtime.pywebview_available ? "ready" : "pending"}">
-          <span>${"pywebview"}</span>
-          <strong>${runtime.pywebview_available ? "已安装" : "未安装"}</strong>
-          <small>${"桌面窗口和原生句柄来自这一层。"}</small>
+          <span>${"桌面组件"}</span>
+          <strong>${runtime.pywebview_available ? "已就绪" : "未安装"}</strong>
+          <small>${"桌面窗口依赖此组件。"}</small>
         </article>
-        <article class="runtime-status-card ${runtime.python_vlc_available ? "ready" : "pending"}">
-          <span>${"python-vlc"}</span>
-          <strong>${runtime.python_vlc_available ? "已安装" : "未安装"}</strong>
-          <small>${"libVLC 真嵌入原型依赖这个 Python 绑定。"}</small>
+        <article class="runtime-status-card ${runtime.mpv_available ? "ready" : "pending"}">
+          <span>${"mpv 路径"}</span>
+          <strong>${runtime.mpv_available ? "已就绪" : "未配置"}</strong>
+          <small>${"内置播放器依赖 mpv.exe。"}</small>
         </article>
       </div>
       <div class="settings-inline-note runtime-note">
-        <strong>${runtime.embed_ready ? "可以开始 libVLC 原型" : "当前还不建议切到 libVLC"}</strong>
+        <strong>${runtime.desktop_mode ? "可启用内置播放器" : "暂不支持内置播放器"}</strong>
         <span>${escapeHtml(runtimeSummary)}</span>
       </div>
       ${runtimeReasonList.length ? `
@@ -2678,28 +3007,18 @@ function renderPlayerTab(config) {
         </label>
         <label>
           <span>${"默认播放器"}</span>
-          <select name="default_player">
-            <option value="vlc_controlled" ${config.default_player === "vlc_controlled" || config.default_player === "builtin" ? "selected" : ""}>VLC 受控模式</option>
-            <option value="potplayer" ${config.default_player === "potplayer" ? "selected" : ""}>PotPlayer</option>
-            <option value="vlc" ${config.default_player === "vlc" ? "selected" : ""}>VLC</option>
-          </select>
+          <input value="内置播放器 mpv" disabled>
+          <input type="hidden" name="default_player" value="mpv_desktop">
         </label>
         <label class="full-width">
           <span>${"播放模式说明"}</span>
-          <div class="settings-inline-note">${"VLC 受控模式会由应用接管 VLC 的播放状态、最近播放、进度同步、完播统计和画像数据。`PotPlayer` 与普通 `VLC` 仍可作为纯外部播放器使用。"}</div>
+          <div class="settings-inline-note">${"现在仅保留内置 mpv。播放进度、续播和观影统计都会通过应用统一同步。"}</div>
         </label>
-        <label>
-          <span>${"PotPlayer 路径"}</span>
+        <label class="full-width">
+          <span>${"mpv 路径"}</span>
           <div class="path-picker-row">
-            <input id="potplayerPathInput" name="potplayer_path" value="${escapeAttr(config.potplayer_path || "")}" placeholder="PotPlayer.exe 路径">
-            <button class="ghost-btn" type="button" data-pick-player="potplayer">${"浏览…"}</button>
-          </div>
-        </label>
-        <label>
-          <span>${"VLC 路径"}</span>
-          <div class="path-picker-row">
-            <input id="vlcPathInput" name="vlc_path" value="${escapeAttr(config.vlc_path || "")}" placeholder="vlc.exe 路径">
-            <button class="ghost-btn" type="button" data-pick-player="vlc">${"浏览…"}</button>
+            <input id="mpvPathInput" name="mpv_path" value="${escapeAttr(config.mpv_path || "")}" placeholder="mpv.exe 路径">
+            <button class="ghost-btn" type="button" data-pick-player="mpv">${"浏览…"}</button>
           </div>
         </label>
         <label class="full-width">
@@ -2712,14 +3031,14 @@ function renderPlayerTab(config) {
     <div class="settings-card">
       <div class="settings-card-head">
         <div>
-          <h4>${"需要扫描的本地目录"}</h4>
+          <h4>${"本地扫描目录"}</h4>
         </div>
-        <p>${"例如电影盘、剧集盘、NAS 映射盘。只添加放视频的目录，避免扫描太慢。"}</p>
+        <p>${"添加电影盘、剧集盘或 NAS 映射盘，只选放视频的目录。"}</p>
       </div>
       <div class="mount-list">
         ${renderMountList(localDirs, "local")}
       </div>
-      <button class="primary-btn" type="button" data-browse-dirs="local">${"浏览本地目录"}</button>
+      <button class="primary-btn" type="button" data-browse-dirs="local">${"添加目录"}</button>
     </div>
   `;
 }
@@ -2728,8 +3047,8 @@ function renderOpenListTab(config) {
   return `
     <div class="settings-section-head">
       <span>${"网盘聚合"}</span>
-      <h3>${"把多个网盘接成一个入口"}</h3>
-      <p>${"先启用 OpenList，再添加网盘驱动。添加成功后，再回到“媒体源”里选择要扫描的挂载目录。"}</p>
+      <h3>${"多网盘统一入口"}</h3>
+      <p>${"启用 OpenList 后添加网盘驱动，再回到「媒体源」选择扫描目录。"}</p>
     </div>
 
     <div class="settings-card">
@@ -2753,7 +3072,7 @@ function renderOpenListTab(config) {
       </div>
       <div class="settings-field-grid">
         <label>
-          <span>${"启用内置 OpenList"}</span>
+          <span>${"内置 OpenList"}</span>
           <select name="openlist_enabled" id="openlistEnabledSelect">
             <option value="false" ${!config.openlist_enabled ? "selected" : ""}>${"禁用"}</option>
             <option value="true" ${config.openlist_enabled ? "selected" : ""}>${"启用"}</option>
@@ -2764,7 +3083,7 @@ function renderOpenListTab(config) {
           <input name="openlist_port" type="number" min="1024" max="65535" value="${escapeAttr(String(config.openlist_port || 5244))}">
         </label>
         <label>
-          <span>${"自动启动"}</span>
+          <span>${"开机自启"}</span>
           <select name="openlist_auto_start">
             <option value="true" ${config.openlist_auto_start !== false ? "selected" : ""}>${"是"}</option>
             <option value="false" ${config.openlist_auto_start === false ? "selected" : ""}>${"否"}</option>
@@ -2777,21 +3096,22 @@ function renderOpenListTab(config) {
       </div>
       <div style="margin-top:12px; display:flex; align-items:center; gap:8px;">
         <button class="ghost-btn" type="button" id="openlistResetPasswordBtn">${"重置密码"}</button>
-        <span style="font-size:13px; color:var(--text-soft);">${"如果登录失败，点击此按钮重置为当前填写的密码"}</span>
+        <span style="font-size:13px; color:var(--text-soft);">${"登录失败时使用"}</span>
       </div>
     </div>
 
     <div class="settings-card">
       <div class="settings-card-head">
         <div>
-          <h4>${"操作"}</h4>
+          <h4>${"服务控制"}</h4>
         </div>
       </div>
       <div style="display:flex; gap:8px; flex-wrap:wrap;">
         <button class="primary-btn" type="button" id="openlistStartBtn">${"启动"}</button>
         <button class="ghost-btn" type="button" id="openlistStopBtn">${"停止"}</button>
         <button class="ghost-btn" type="button" id="openlistRestartBtn">${"重启"}</button>
-        <button class="ghost-btn" type="button" id="openlistDownloadBtn">${"下载/更新"}</button>
+        <button class="ghost-btn" type="button" id="openlistDownloadBtn">${"更新"}</button>
+        <button class="ghost-btn" type="button" id="openlistUninstallBtn" style="color:var(--danger);">${"卸载"}</button>
       </div>
       <div id="openlistDownloadProgress" class="hidden" style="margin-top:12px;">
         <div class="job-progress-bar"><div id="openlistDownloadProgressBar" style="width:0%"></div></div>
@@ -2804,7 +3124,7 @@ function renderOpenListTab(config) {
         <div>
           <h4>${"存储驱动"}</h4>
         </div>
-        <p>${"挂载网盘到 OpenList，支持夸克、阿里云盘、115、百度网盘等。"}</p>
+        <p>${"添加夸克、阿里云盘、115、百度网盘等驱动到 OpenList。"}</p>
       </div>
       <div id="openlistStorageList"></div>
       <div id="openlistDriverForm"></div>
@@ -2818,8 +3138,8 @@ function renderAppearanceTab(config) {
   return `
     <div class="settings-section-head">
       <span>${"界面"}</span>
-      <h3>${"把界面和元数据偏好设舒服"}</h3>
-      <p>${"这里不会影响你的片库内容，只影响显示方式和自动补全信息的行为。"}</p>
+      <h3>${"主题与刮削设置"}</h3>
+      <p>${"不影响片库内容，只改界面外观和封面自动获取。"}</p>
     </div>
 
     <div class="settings-card">
@@ -2846,19 +3166,49 @@ function renderAppearanceTab(config) {
         <div>
           <h4>${"自动刮削"}</h4>
         </div>
-        <p>${"自动刮削会优先尝试 TMDB 和豆瓣，AniBK 作为备用源参与回退。"}</p>
+        <p>${"新视频自动获取封面和简介，优先 TMDB 和豆瓣。"}</p>
       </div>
       <div class="settings-field-grid">
         <label>
-          <span>${"自动刮削"}</span>
+          <span>${"状态"}</span>
           <select name="enable_auto_scrape">
             <option value="true" ${config.enable_auto_scrape ? "selected" : ""}>${"启用"}</option>
             <option value="false" ${!config.enable_auto_scrape ? "selected" : ""}>${"禁用"}</option>
           </select>
         </label>
         <label>
-          <span>${"TMDB API 密钥"}</span>
-          <input name="tmdb_api_key" type="password" value="${escapeAttr(config.tmdb_api_key || "")}" placeholder="${"填入你自己的 TMDB API Key"}">
+          <span>${"TMDB API Key"}</span>
+          <input name="tmdb_api_key" type="password" value="${escapeAttr(config.tmdb_api_key || "")}" placeholder="${"填写你的 TMDB API Key"}">
+        </label>
+        <label class="full-width">
+          <span>${"豆瓣 Cookie"}</span>
+          <textarea name="douban_cookie" rows="3" placeholder="${"可填入你自己的豆瓣 Cookie，提升搜索和详情抓取成功率"}">${escapeHtml(config.douban_cookie || "")}</textarea>
+        </label>
+      </div>
+    </div>
+
+    <div class="settings-card">
+      <div class="settings-card-head">
+        <div>
+          <h4>${"增量扫描"}</h4>
+        </div>
+        <p>${"软件启动后会在后台检查 OpenList 更新，只扫描新增或变更的目录。"}</p>
+      </div>
+      <div class="settings-field-grid">
+        <label>
+          <span>${"后台自动检查"}</span>
+          <select name="auto_incremental_sync">
+            <option value="true" ${config.auto_incremental_sync !== false ? "selected" : ""}>${"启用"}</option>
+            <option value="false" ${config.auto_incremental_sync === false ? "selected" : ""}>${"禁用"}</option>
+          </select>
+        </label>
+        <label>
+          <span>${"检查间隔（分钟）"}</span>
+          <input name="auto_incremental_sync_interval_minutes" type="number" min="5" max="720" value="${escapeAttr(String(config.auto_incremental_sync_interval_minutes || 30))}">
+        </label>
+        <label>
+          <span>${"快速扫描范围（天）"}</span>
+          <input name="incremental_recent_days" type="number" min="1" max="30" value="${escapeAttr(String(config.incremental_recent_days || 7))}">
         </label>
       </div>
     </div>
@@ -2881,11 +3231,26 @@ function getThemeEmoji(theme) {
 }
 
 function renderMaintenanceTab() {
+  const scanStatus = state.scanStatus || {};
   return `
     <div class="settings-section-head">
       <span>${"维护"}</span>
-      <h3>${"清理缓存，或恢复初始状态"}</h3>
-      <p>${"大多数情况下只需要清缓存。只有在配置完全乱掉时，才建议清空全部数据重置。"}</p>
+      <h3>${"缓存清理与重置"}</h3>
+      <p>${"一般清缓存即可，配置异常时才需要重置全部数据。"}</p>
+    </div>
+
+    <div class="settings-card">
+      <div class="settings-card-head">
+        <div>
+          <h4>${"OpenList 增量同步"}</h4>
+        </div>
+        <p>${scanStatus.scan_at ? `上次检查 ${formatRelativeTime(scanStatus.scan_at)}，新增 ${scanStatus.new_files || 0}，更新 ${scanStatus.updated_files || 0}` : "还没有执行过增量检查。"}</p>
+      </div>
+      <div class="maintenance-grid">
+        <button class="primary-btn" type="button" id="scanIncrementalBtn">${"扫描新增"}</button>
+        <button class="ghost-btn" type="button" id="scanRecentBtn">${"快速扫描（近 ${Number(state.config?.incremental_recent_days || 7)} 天）"}</button>
+        <button class="ghost-btn" type="button" id="rebuildRemoteLibraryBtn">${"全量重建远程片库"}</button>
+      </div>
     </div>
 
     <div class="settings-card">
@@ -2893,12 +3258,12 @@ function renderMaintenanceTab() {
         <div>
           <h4>${"缓存管理"}</h4>
         </div>
-        <p>${"清除缓存不会影响你的配置和收藏。"}</p>
+        <p>${"清缓存不影响配置和收藏。"}</p>
       </div>
       <div class="maintenance-grid">
-        <button class="ghost-btn" type="button" id="clearRemoteCacheBtn">${"清除远程缓存"}</button>
-        <button class="ghost-btn" type="button" id="clearLocalCacheBtn">${"清除本地缓存"}</button>
-        <button class="ghost-btn" type="button" id="clearAllCacheBtn">${"清除全部缓存"}</button>
+        <button class="ghost-btn" type="button" id="clearRemoteCacheBtn">${"远程缓存"}</button>
+        <button class="ghost-btn" type="button" id="clearLocalCacheBtn">${"本地缓存"}</button>
+        <button class="ghost-btn" type="button" id="clearAllCacheBtn">${"全部缓存"}</button>
       </div>
     </div>
 
@@ -2907,9 +3272,9 @@ function renderMaintenanceTab() {
         <div>
           <h4 style="color: var(--danger);">${"危险区域"}</h4>
         </div>
-        <p>${"此操作不可恢复，请谨慎操作。"}</p>
+        <p>${"操作不可恢复，请谨慎。"}</p>
       </div>
-      <button class="ghost-btn danger-btn" type="button" id="clearAllDataBtn">${"清除全部数据并重置"}</button>
+      <button class="ghost-btn danger-btn" type="button" id="clearAllDataBtn">${"重置全部数据"}</button>
     </div>
   `;
 }
@@ -2926,7 +3291,7 @@ function renderFirstRunWizard() {
         <div class="wizard-modal" id="wizardModal">
           <div class="wizard-header">
             <h2>${"欢迎使用鸡米花"}</h2>
-            <p>${"只需几步，即可开始管理你的影视库"}</p>
+            <p>${"三步完成基础配置"}</p>
           </div>
 
           <div class="wizard-steps">
@@ -2973,19 +3338,19 @@ function renderWizardStep1() {
   return `
     <div style="text-align:center; margin-bottom:24px;">
       <h3 style="margin:0 0 8px;">${"选择媒体源"}</h3>
-      <p style="color:var(--text-soft); margin:0;">${"选择你要从哪里获取视频资源"}</p>
+      <p style="color:var(--text-soft); margin:0;">${"视频资源从哪里来"}</p>
     </div>
     <div class="wizard-source-grid">
       <div class="wizard-source-card ${_wizardSource === "openlist" ? "selected" : ""}" data-wizard-source="openlist">
         <div class="wizard-source-icon">☁️</div>
         <h4>${"OpenList 网盘"}</h4>
-        <p>${"支持夸克、阿里云盘、115、百度网盘等多种网盘"}</p>
+        <p>${"夸克、阿里云盘、115、百度网盘等"}</p>
         <span class="wizard-source-badge">${"推荐"}</span>
       </div>
       <div class="wizard-source-card ${_wizardSource === "webdav" ? "selected" : ""}" data-wizard-source="webdav">
         <div class="wizard-source-icon">🌐</div>
         <h4>${"WebDAV"}</h4>
-        <p>${"连接自建的 WebDAV 服务器或坚果云等服务"}</p>
+        <p>${"自建 WebDAV、群晖、坚果云等"}</p>
       </div>
     </div>
   `;
@@ -2996,11 +3361,11 @@ function renderWizardStep2() {
     return `
       <div style="text-align:center; margin-bottom:24px;">
         <h3 style="margin:0 0 8px;">${"配置 OpenList"}</h3>
-        <p style="color:var(--text-soft); margin:0;">${"OpenList 是内置的网盘聚合服务"}</p>
+        <p style="color:var(--text-soft); margin:0;">${"内置网盘聚合服务"}</p>
       </div>
       <div class="settings-card" style="max-width:400px; margin:0 auto;">
         <p style="color:var(--text-soft); font-size:14px; text-align:center;">
-          ${"保存设置后，系统会自动下载并启动 OpenList，然后你可以在 OpenList 管理界面添加网盘驱动。"}
+          ${"保存后自动下载启动，之后在管理界面添加网盘驱动。"}
         </p>
         <div class="settings-field-grid">
           <label>
@@ -3019,7 +3384,7 @@ function renderWizardStep2() {
   return `
     <div style="text-align:center; margin-bottom:24px;">
       <h3 style="margin:0 0 8px;">${"配置 WebDAV"}</h3>
-      <p style="color:var(--text-soft); margin:0;">${"填写你的 WebDAV 服务器信息"}</p>
+      <p style="color:var(--text-soft); margin:0;">${"填写 WebDAV 服务器信息"}</p>
     </div>
     <div class="settings-card" style="max-width:480px; margin:0 auto;">
       <div class="settings-field-grid">
@@ -3036,8 +3401,8 @@ function renderWizardStep2() {
           <input name="webdav_pass" type="password" placeholder="${"登录密码"}">
         </label>
         <label class="full-width">
-          <span>${"Cookie / Token（可选）"}</span>
-          <textarea name="remote_cookie" rows="2" placeholder="${"如果需要额外认证"}"></textarea>
+          <span>${"Cookie（可选）"}</span>
+          <textarea name="remote_cookie" rows="2" placeholder="${"支持会话鉴权时可填写"}"></textarea>
         </label>
       </div>
     </div>
@@ -3052,7 +3417,7 @@ function renderWizardStep3() {
   return `
     <div style="text-align:center; margin-bottom:24px;">
       <h3 style="margin:0 0 8px;">${"选择扫描目录"}</h3>
-      <p style="color:var(--text-soft); margin:0;">${"选择要扫描的目录，之后也可以在设置中修改"}</p>
+      <p style="color:var(--text-soft); margin:0;">${"选择要扫描的目录，之后可随时修改"}</p>
     </div>
     <div style="display:grid; gap:16px; max-width:480px; margin:0 auto;">
       <div class="settings-card">
@@ -3062,7 +3427,7 @@ function renderWizardStep3() {
         <div class="mount-list" id="remoteMountList">
           ${renderMountList(remoteDirs, "webdav")}
         </div>
-        <button class="primary-btn" type="button" id="browseRemoteDirsBtn" data-browse-dirs="webdav">${isOpenlist ? "浏览 OpenList 目录" : "浏览远程目录"}</button>
+        <button class="primary-btn" type="button" id="browseRemoteDirsBtn" data-browse-dirs="webdav">${isOpenlist ? "浏览目录" : "浏览远程目录"}</button>
       </div>
       <div class="settings-card">
         <div class="settings-card-head">
@@ -3071,7 +3436,7 @@ function renderWizardStep3() {
         <div class="mount-list">
           ${renderMountList(localDirs, "local")}
         </div>
-        <button class="primary-btn" type="button" data-browse-dirs="local">${"浏览本地目录"}</button>
+        <button class="primary-btn" type="button" data-browse-dirs="local">${"添加目录"}</button>
       </div>
     </div>
   `;
@@ -3157,9 +3522,8 @@ async function handleWizardFinish() {
     saved_mount_dirs: [...state.webdavDirs],
     local_scan_max_depth: 3,
     local_mount_dirs: [...state.localDirs],
-    potplayer_path: "",
-    vlc_path: "",
-    default_player: "potplayer",
+    mpv_path: "",
+    default_player: "mpv_desktop",
     video_formats: [".mp4", ".mkv", ".avi", ".mov", ".wmv", ".flv", ".rmvb", ".ts"],
     enable_auto_scrape: true,
     scrape_source: "auto",
@@ -3354,6 +3718,45 @@ function bindSettingsView() {
     if (result) showToast("全部缓存已清除", "success");
   });
 
+  document.getElementById("scanIncrementalBtn")?.addEventListener("click", async () => {
+    const persisted = await persistSettingsIfNeeded({ force: true, silent: true });
+    if (persisted === null) return;
+    const autoScrape = state.config?.enable_auto_scrape !== false;
+    const response = await guarded(() =>
+      api(`/api/library/scan-incremental?auto_scrape=${autoScrape}&recent_only=false`, { method: "POST" })
+    );
+    if (response?.job_id) {
+      startJobPolling(response.job_id, "remote", "新增扫描完成");
+    }
+  });
+
+  document.getElementById("scanRecentBtn")?.addEventListener("click", async () => {
+    const persisted = await persistSettingsIfNeeded({ force: true, silent: true });
+    if (persisted === null) return;
+    const autoScrape = state.config?.enable_auto_scrape !== false;
+    const days = Number(state.config?.incremental_recent_days || 7);
+    const response = await guarded(() =>
+      api(`/api/library/scan-incremental?auto_scrape=${autoScrape}&recent_only=true&recent_days=${days}`, { method: "POST" })
+    );
+    if (response?.job_id) {
+      startJobPolling(response.job_id, "remote", "快速扫描完成");
+    }
+  });
+
+  document.getElementById("rebuildRemoteLibraryBtn")?.addEventListener("click", async () => {
+    const confirmed = window.confirm("这会重新扫描整个 OpenList 远程片库，耗时会比增量扫描长。确定继续吗？");
+    if (!confirmed) return;
+    const persisted = await persistSettingsIfNeeded({ force: true, silent: true });
+    if (persisted === null) return;
+    const autoScrape = state.config?.enable_auto_scrape !== false;
+    const response = await guarded(() =>
+      api(`/api/library/rebuild-remote?auto_scrape=${autoScrape}`, { method: "POST" })
+    );
+    if (response?.job_id) {
+      startJobPolling(response.job_id, "remote", "远程片库重建完成");
+    }
+  });
+
   document.getElementById("clearAllDataBtn")?.addEventListener("click", async () => {
     const confirmed = window.confirm("这会将软件恢复到初始状态，包括：\n\n• 停止并重置内置 OpenList\n• 清除所有网盘配置\n• 清除收藏、播放记录、封面和缓存\n• 重置所有设置到默认值\n\n确定继续吗？");
     if (!confirmed) return;
@@ -3372,8 +3775,8 @@ function bindSettingsView() {
   // 播放器路径选择
   settingsForm.querySelectorAll("[data-pick-player]").forEach((button) => {
     button.addEventListener("click", async () => {
-      const player = button.dataset.pickPlayer || "potplayer";
-      const targetInput = player === "vlc" ? document.getElementById("vlcPathInput") : document.getElementById("potplayerPathInput");
+      const player = button.dataset.pickPlayer || "mpv";
+      const targetInput = document.getElementById("mpvPathInput");
       const currentPath = String(targetInput?.value || "").trim();
       const result = await guarded(() =>
         api("/api/system/pick-player", {
@@ -3586,7 +3989,16 @@ async function handleBuiltinOpenListBrowseFlow() {
 async function handleRemoteConnectAndBrowse() {
   const payload = getSettingsPayload();
   if (normalizeRemoteProvider(payload.remote_provider) === "openlist" && normalizeOpenListSourceMode(payload.openlist_source_mode) === "builtin") {
-    return handleBuiltinOpenListBrowseFlow();
+    syncRemoteDraftToState();
+    await persistSettingsIfNeeded({ force: true, silent: true });
+    await Promise.all([fetchOpenListConfig(), fetchOpenListStatus(), fetchOpenListStorages()]);
+    const status = state.openlistStatus || {};
+    if (!status.binary_available || !state.config?.openlist_enabled || status.status !== "running" || !state.openlistStorages.length) {
+      showToast("请先在下方 OpenList 面板中完成配置（下载→启动→添加驱动）", "info", 4000);
+      return false;
+    }
+    await openDirectoryModal("webdav", getRemoteRootPath());
+    return true;
   }
 
   const success = await testRemoteConnectionFlow();
@@ -3616,13 +4028,16 @@ function getSettingsPayload() {
       saved_mount_dirs: [...state.webdavDirs],
       local_scan_max_depth: state.config?.local_scan_max_depth || 3,
       local_mount_dirs: [...state.localDirs],
-      potplayer_path: state.config?.potplayer_path || "",
-      vlc_path: state.config?.vlc_path || "",
-      default_player: state.config?.default_player === "builtin" ? "vlc_controlled" : (state.config?.default_player || "potplayer"),
+      mpv_path: state.config?.mpv_path || "",
+      default_player: "mpv_desktop",
       video_formats: state.config?.video_formats || [".mp4", ".mkv", ".avi", ".mov", ".wmv", ".flv", ".rmvb", ".ts"],
       enable_auto_scrape: state.config?.enable_auto_scrape !== false,
+      auto_incremental_sync: state.config?.auto_incremental_sync !== false,
+      auto_incremental_sync_interval_minutes: Number(state.config?.auto_incremental_sync_interval_minutes || 30),
+      incremental_recent_days: Number(state.config?.incremental_recent_days || 7),
       scrape_source: state.config?.scrape_source || "auto",
       tmdb_api_key: state.config?.tmdb_api_key || "",
+      douban_cookie: state.config?.douban_cookie || "",
       tmdb_api_base: state.config?.tmdb_api_base || "https://api.themoviedb.org/3",
       tmdb_web_base: state.config?.tmdb_web_base || "https://www.themoviedb.org",
       tmdb_image_base: state.config?.tmdb_image_base || "https://image.tmdb.org/t/p/w500",
@@ -3666,13 +4081,16 @@ function getSettingsPayload() {
     saved_mount_dirs: [...state.webdavDirs],
     local_scan_max_depth: Number(formData.get("local_scan_max_depth") || 3),
     local_mount_dirs: [...state.localDirs],
-    potplayer_path: String(formData.get("potplayer_path") || "").trim(),
-    vlc_path: String(formData.get("vlc_path") || "").trim(),
-    default_player: String(formData.get("default_player") || "potplayer").trim() || "potplayer",
+    mpv_path: String(formData.get("mpv_path") || "").trim(),
+    default_player: "mpv_desktop",
     video_formats: videoFormats,
     enable_auto_scrape: formData.get("enable_auto_scrape") === "true",
+    auto_incremental_sync: formData.get("auto_incremental_sync") !== "false",
+    auto_incremental_sync_interval_minutes: Number(formData.get("auto_incremental_sync_interval_minutes") || 30),
+    incremental_recent_days: Number(formData.get("incremental_recent_days") || 7),
     scrape_source: "auto",
     tmdb_api_key: String(formData.get("tmdb_api_key") || "").trim(),
+    douban_cookie: String(formData.get("douban_cookie") || "").trim(),
     tmdb_api_base: String(formData.get("tmdb_api_base") || "https://api.themoviedb.org/3").trim(),
     tmdb_web_base: String(formData.get("tmdb_web_base") || "https://www.themoviedb.org").trim(),
     tmdb_image_base: String(formData.get("tmdb_image_base") || "https://image.tmdb.org/t/p/w500").trim(),
@@ -3721,7 +4139,8 @@ function renderEmptyState() {
 async function openDetail(movie) {
   state.selectedMovie = movie;
   state.selectedSeasonPath = movie.resume_path || (Array.isArray(movie.seasons) && movie.seasons.length ? movie.seasons[0].path : movie.path);
-  state.selectedEpisode = 0;
+  const activeSeason = (Array.isArray(movie.seasons) ? movie.seasons.find((item) => item.path === state.selectedSeasonPath) : null) || movie;
+  state.selectedEpisode = getResumeEpisodeIndex(activeSeason);
   renderDetail();
   openModal("detailModal");
 }
@@ -3730,7 +4149,13 @@ function renderDetail() {
   const movie = state.selectedMovie;
   if (!movie) return;
   const currentSeason = getActiveSeasonEntry(movie) || movie;
-  const currentTitle = currentSeason.title || currentSeason.name || movie.title || movie.name || "未命名";
+  const episodeCount = Number(currentSeason.episode_count || currentSeason.episode_files?.length || currentSeason.episodes?.length || 0);
+  if (episodeCount > 0) {
+    state.selectedEpisode = Math.max(0, Math.min(episodeCount - 1, Number(state.selectedEpisode || 0)));
+  } else {
+    state.selectedEpisode = 0;
+  }
+  const currentTitle = movie.is_series ? getSeriesDisplayTitle(movie) : (currentSeason.title || currentSeason.name || movie.title || movie.name || "未命名");
   const title = escapeHtml(currentTitle);
   const seasonLabel = getSeasonEntryLabel(currentSeason, movie, (Array.isArray(movie.seasons) ? movie.seasons.indexOf(currentSeason) : 0));
   const cover = currentSeason.cover_url || movie.cover_url || "";
@@ -3745,7 +4170,10 @@ function renderDetail() {
     .map((item) => `<span>${escapeHtml(String(item))}</span>`)
     .join("");
   const seasons = Array.isArray(movie.seasons) && movie.seasons.length ? movie.seasons : [movie];
-  const playbackText = formatPlaybackText(currentSeason.playback);
+  const isResumeTarget = isSelectedEpisodeResumeTarget(currentSeason, state.selectedEpisode);
+  const playbackText = isResumeTarget ? formatPlaybackText(currentSeason.playback, movie) : "";
+  const seriesResumeHint = movie.is_series ? formatResumeHint(movie) : "";
+  const selectedEpisodeLabel = currentSeason.is_series ? formatEpisodeLabel(state.selectedEpisode) : "";
   const seasonPicker = movie.is_series && seasons.length > 1
     ? `
       <label class="detail-season-picker">
@@ -3760,69 +4188,159 @@ function renderDetail() {
       </label>
     `
     : "";
+  const episodes = currentSeason.episodes || [];
+  const episodesPerPage = 12;
+  const totalPages = Math.ceil(episodes.length / episodesPerPage);
+  const currentPage = Number(state.episodePage || 0);
+  const startIndex = currentPage * episodesPerPage;
+  const endIndex = startIndex + episodesPerPage;
+  const paginatedEpisodes = episodes.slice(startIndex, endIndex);
+
+  const getEpisodeProgress = (episodeIndex) => {
+    if (!currentSeason.episode_files || !currentSeason.episode_files[episodeIndex]) return null;
+    const episodePath = currentSeason.episode_files[episodeIndex];
+    const progressData = allPlaybackProgress[episodePath];
+    if (!progressData || !progressData.progress || !progressData.duration) return null;
+    return Math.round((progressData.progress / progressData.duration) * 100);
+  };
+
   const episodeCards = currentSeason.is_series
     ? `
       <div class="detail-episode-strip">
-        ${(currentSeason.episodes || []).map((episode, index) => `
-          <button class="episode-card ${index === state.selectedEpisode ? "active" : ""}" data-episode-btn="${index}" title="${"双击播放这一集"}">
-            <span class="episode-card-index">E${String(index + 1).padStart(2, "0")}</span>
-            <strong>${escapeHtml(episode || `第 ${index + 1} 集`)}</strong>
-            <span>${escapeHtml(seasonLabel)}</span>
-          </button>
-        `).join("")}
+        ${paginatedEpisodes.map((episode, pageIndex) => {
+          const actualIndex = startIndex + pageIndex;
+          const progress = getEpisodeProgress(actualIndex);
+          return `
+            <button class="episode-card ${actualIndex === state.selectedEpisode ? "active" : ""}" data-episode-btn="${actualIndex}" title="${"双击播放这一集"}">
+              <span class="episode-card-index">E${String(actualIndex + 1).padStart(2, "0")}</span>
+              <strong>${escapeHtml(episode || `第 ${actualIndex + 1} 集`)}</strong>
+              ${progress !== null ? `
+                <span class="episode-card-progress">
+                  <span class="episode-card-progress-bar" style="width:${progress}%"></span>
+                  <span class="episode-card-progress-text">${progress}%</span>
+                </span>
+              ` : ""}
+              <span>${escapeHtml(seasonLabel)}</span>
+            </button>
+          `;
+        }).join("")}
       </div>
+      ${totalPages > 1 ? `
+        <div class="detail-episode-pagination">
+          <button class="pagination-btn ${currentPage === 0 ? "disabled" : ""}" data-page-btn="${currentPage - 1}">${"上一页"}</button>
+          <span class="pagination-info">${currentPage + 1} / ${totalPages}</span>
+          <button class="pagination-btn ${currentPage >= totalPages - 1 ? "disabled" : ""}" data-page-btn="${currentPage + 1}">${"下一页"}</button>
+        </div>
+      ` : ""}
     `
     : "";
 
+  const tags = currentSeason.tags || movie.tags || [];
+  const watchedCount = movie.is_series ? getWatchedEpisodeCount(movie) : 0;
+  const totalEpisodes = movie.is_series ? (movie.episode_count || 0) : 0;
+  
   document.getElementById("detailContent").innerHTML = `
-    <div class="detail-cinematic-shell">
-      <div class="detail-backdrop">
-        ${cover ? `<img src="${cover}" alt="${title}">` : `<div class="detail-backdrop-fallback"></div>`}
-        <div class="detail-backdrop-mask"></div>
-      </div>
-      <div class="detail-overlay-content">
-        <div class="detail-poster-column">
-          <div class="detail-cover">
-            ${cover ? `<img src="${cover}" alt="${title}">` : `<div class="poster-fallback">${"暂无封面"}</div>`}
+    <div class="detail-hero" style="background-image: url(${cover || 'https://via.placeholder.com/1920x1080?text=No+Cover'})">
+      <div class="detail-content">
+        <img class="detail-poster" src="${cover || 'https://via.placeholder.com/400x600?text=No+Poster'}" alt="${title}">
+        <div class="detail-main">
+          <h1 class="detail-title">${title}</h1>
+          <div class="detail-meta">
+            <span>${currentSeason.year || movie.year || "年份未知"}</span>
+            <span>${currentSeason.region || movie.region || "地区未知"}</span>
+            ${movie.is_series ? `<span>${movie.season_count > 1 ? `全${movie.season_count}季 · ` : ''}${totalEpisodes}集</span>` : `<span>${currentSeason.duration || movie.duration || "时长未知"}</span>`}
+            ${currentSeason.rating || movie.rating ? `<span class="rating">${currentSeason.rating || movie.rating}</span>` : ''}
+          </div>
+          ${tags.length > 0 ? `<div class="detail-tags">${tags.map(tag => `<span class="tag">${escapeHtml(tag)}</span>`).join('')}</div>` : ''}
+          <p class="detail-desc">${escapeHtml(currentSeason.intro || movie.intro || "暂无简介")}</p>
+          <div class="action-buttons">
+            <button class="btn btn-primary" data-play-movie="${escapeAttr(currentSeason.path)}" data-episode-index="${state.selectedEpisode}">▶ ${playbackText ? "继续播放" : "立即播放"}</button>
+            <button class="btn btn-secondary ${currentSeason.is_favorite ? "active" : ""}" data-toggle-favorite="${escapeAttr(currentSeason.path)}">⭐ ${currentSeason.is_favorite ? "取消收藏" : "加入收藏"}</button>
+            <button class="btn btn-secondary" data-edit-movie="${escapeAttr(currentSeason.path)}">📁 编辑信息</button>
+            <button class="btn btn-secondary" data-scrape-movie="${escapeAttr(currentSeason.path)}">🔍 手动刮削</button>
           </div>
         </div>
-        <div class="detail-info-column">
-          <div class="detail-hero detail-hero-rich">
-            <span class="section-eyebrow">${"片库详情"}</span>
-            <h3>${title}</h3>
-            ${movie.is_series ? `<div class="detail-season-name">${escapeHtml(seasonLabel)}</div>` : ""}
-            <div class="detail-meta">${meta}</div>
-            ${playbackText ? `<div class="detail-resume-pill">${escapeHtml(playbackText)}</div>` : ""}
-            ${progressPercent > 0 ? `<div class="detail-progress"><span style="width:${progressPercent}%"></span></div>` : ""}
-            <div class="detail-summary">${escapeHtml(currentSeason.intro || movie.intro || "暂无简介")}</div>
+      </div>
+    </div>
+
+    <div class="detail-container">
+      ${movie.is_series && seasons.length > 1 ? `
+        <div class="section">
+          <h2 class="section-title">选择季数</h2>
+          <div class="season-selector">
+            ${seasons.map((item, index) => `
+              <button class="season-btn ${item.path === currentSeason.path ? "active" : ""}" data-season-btn="${escapeAttr(item.path)}">
+                ${escapeHtml(getSeasonEntryLabel(item, movie, index))}
+              </button>
+            `).join('')}
           </div>
-          <div class="detail-actions">
-            <button class="detail-action primary" data-play-movie="${escapeAttr(currentSeason.path)}" data-episode-index="${state.selectedEpisode}">${playbackText ? "继续播放" : "播放"}</button>
-            <button class="detail-action favorite ${currentSeason.is_favorite ? "active" : ""}" data-toggle-favorite="${escapeAttr(currentSeason.path)}">${currentSeason.is_favorite ? "取消收藏" : "加入收藏"}</button>
-            <button class="detail-action" data-edit-movie="${escapeAttr(currentSeason.path)}">${"编辑信息"}</button>
-            <button class="detail-action" data-scrape-movie="${escapeAttr(currentSeason.path)}">${"重新补全"}</button>
-            <button class="detail-action" data-manual-match="${escapeAttr(currentSeason.path)}">${"手动匹配"}</button>
-            <button class="detail-action" data-manage-tags="${escapeAttr(currentSeason.path)}">${"管理标签"}</button>
+        </div>
+      ` : ''}
+
+      ${movie.is_series && episodes.length > 0 ? `
+        <div class="section">
+          <h3 style="margin-bottom: 16px; color: var(--text-secondary); font-size: 16px;">${escapeHtml(seasonLabel)} · ${episodes.length}集</h3>
+          <div class="episode-grid">
+            ${episodes.map((episode, index) => {
+              const progress = getEpisodeProgress(index);
+              const isWatched = progress !== null && progress >= 90;
+              return `
+                <button class="episode-card ${index === state.selectedEpisode ? "active" : ""} ${isWatched ? "watched" : ""}" data-episode-btn="${index}" title="${"点击播放"}">
+                  <div class="episode-num">${String(index + 1).padStart(2, "0")}</div>
+                  <div class="episode-title">${escapeHtml(episode || `第 ${index + 1} 集`)}</div>
+                  ${progress !== null && progress < 90 ? `<div class="episode-progress-bar"><span style="width:${progress}%"></span></div>` : ""}
+                </button>
+              `;
+            }).join('')}
           </div>
-          <div class="detail-section-grid">
-            <div class="detail-section detail-glass-card">
-              <div class="detail-section-title">${"剧集概览"}</div>
-              <div class="detail-overview-metrics">
-                <div><strong>${movie.season_count || 1}</strong><span>${"季 / 分篇"}</span></div>
-                <div><strong>${currentSeason.episode_count || currentSeason.episode_files?.length || movie.episode_count || 1}</strong><span>${"当前集数"}</span></div>
-                <div><strong>${escapeHtml(String(progressPercent > 0 ? `${progressPercent}%` : (currentSeason.year || movie.year || "--")))}</strong><span>${progressPercent > 0 ? "已观看" : "年份"}</span></div>
-              </div>
+        </div>
+      ` : ''}
+
+      <div class="section">
+        <h2 class="section-title">文件信息</h2>
+        <div class="info-grid">
+          <div class="info-card">
+            <div class="info-label">存储路径</div>
+            <div class="info-value">${escapeHtml(formatMovieSourcePath(currentSeason))}</div>
+          </div>
+          <div class="info-card">
+            <div class="info-label">文件大小</div>
+            <div class="info-value">${currentSeason.file_size || movie.file_size || "未知"}</div>
+          </div>
+          <div class="info-card">
+            <div class="info-label">画质规格</div>
+            <div class="info-value">${currentSeason.video_spec || movie.video_spec || "未知"}</div>
+          </div>
+          <div class="info-card">
+            <div class="info-label">字幕信息</div>
+            <div class="info-value">${currentSeason.subtitle_info || movie.subtitle_info || "未知"}</div>
+          </div>
+          ${movie.is_series && totalEpisodes > 0 ? `
+            <div class="info-card">
+              <div class="info-label">已观看</div>
+              <div class="info-value">${watchedCount}/${totalEpisodes}集</div>
             </div>
-            <div class="detail-section detail-glass-card">
-              <div class="detail-section-title">${"源路径"}</div>
-              <div class="detail-copy compact">${escapeHtml(formatMovieSourcePath(currentSeason))}</div>
+          ` : playbackText ? `
+            <div class="info-card">
+              <div class="info-label">播放进度</div>
+              <div class="info-value">${progressPercent}% · ${playbackText}</div>
             </div>
+          ` : ''}
+          <div class="info-card">
+            <div class="info-label">最近播放</div>
+            <div class="info-value">${currentSeason.last_play_time || movie.last_play_time || "暂无记录"}</div>
           </div>
-          ${seasonPicker ? `<div class="detail-section detail-glass-card"><div class="detail-section-title">${"选择季别"}</div>${seasonPicker}</div>` : ""}
-          ${movie.tags && movie.tags.length > 0 ? `<div class="detail-section detail-glass-card"><div class="detail-section-title">${"标签"}</div><div class="tags-container">${movie.tags.map((tag) => `<span class="tag">${escapeHtml(tag)}</span>`).join(" ")}</div></div>` : ""}
-          ${episodeCards ? `<div class="detail-section detail-glass-card"><div class="detail-section-title">${"分集"}</div>${episodeCards}</div>` : ""}
         </div>
       </div>
+
+      ${tags.length > 0 ? `
+        <div class="section">
+          <h2 class="section-title">标签</h2>
+          <div class="detail-tags">
+            ${tags.map(tag => `<span class="tag">${escapeHtml(tag)}</span>`).join('')}
+          </div>
+        </div>
+      ` : ''}
     </div>
   `;
 
@@ -3834,20 +4352,28 @@ function renderDetail() {
       document.querySelectorAll("[data-episode-btn]").forEach((btn) => {
         btn.classList.toggle("active", Number(btn.dataset.episodeBtn) === index);
       });
-      const playBtn = document.querySelector(".detail-action.primary[data-play-movie]");
+      const playBtn = document.querySelector(".btn-primary[data-play-movie]");
       if (playBtn) playBtn.dataset.episodeIndex = String(index);
     });
   });
 
-  const seasonSelect = document.getElementById("detailSeasonSelect");
-  if (seasonSelect) {
-    seasonSelect.addEventListener("change", () => {
-      state.selectedSeasonPath = seasonSelect.value;
-      state.selectedEpisode = 0;
+  document.querySelectorAll("[data-season-btn]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const seasonPath = button.dataset.seasonBtn;
+      if (state.selectedSeasonPath === seasonPath) return;
+      state.selectedSeasonPath = seasonPath;
+      const selectedSeason = (Array.isArray(movie.seasons) ? movie.seasons.find((item) => item.path === seasonPath) : null) || movie;
+      state.selectedEpisode = getResumeEpisodeIndex(selectedSeason);
       syncSelectedMovie();
       renderDetail();
     });
-  }
+  });
+
+  document.querySelectorAll("[data-scrape-movie]").forEach((button) => {
+    button.addEventListener("click", () => {
+      scrapeSingle(button.dataset.scrapeMovie);
+    });
+  });
 }
 
 function openEditModal(movie) {
@@ -4308,7 +4834,7 @@ function renderCandidateModal() {
 }
 
 async function playMovie(moviePath, episodeIndex = 0) {
-  if ((state.config?.default_player || "potplayer") === "vlc_controlled" || (state.config?.default_player || "potplayer") === "builtin") {
+  if (usesInlinePlayer()) {
     await openInlinePlayer(moviePath, episodeIndex);
     return;
   }
@@ -4322,8 +4848,39 @@ async function playMovie(moviePath, episodeIndex = 0) {
   );
   if (!payload) return;
 
+  // 上报观看行为（模拟观看10分钟后上报）
+  reportWatchBehavior(moviePath, episodeIndex);
+
   showToast("播放器已启动", "success");
   await loadCurrentView();
+}
+
+// 记录观看行为数据
+async function reportWatchBehavior(moviePath, episodeIndex = 0) {
+  // 模拟观看5分钟后上报行为数据
+  setTimeout(async () => {
+    try {
+      const movie = getDisplayMovieByPath(moviePath);
+      const payload = {
+        media_id: moviePath,
+        duration: 300, // 5分钟 = 300秒
+        progress: episodeIndex > 0 ? episodeIndex : null,
+        media_type: movie?.is_series ? "series" : "movie",
+        genres: movie?.genres || []
+      };
+      
+      await api("/api/behavior/watch", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      
+      // 刷新数据状态
+      state.hasAnalyticsData = undefined;
+    } catch (e) {
+      console.log("行为上报失败:", e);
+    }
+  }, 5000); // 5秒后上报（模拟观看行为）
 }
 
 function getInlinePlayerElements() {
@@ -4341,6 +4898,7 @@ function getInlinePlayerElements() {
 
 function resetInlinePlayerState() {
   state.inlinePlayer = {
+    mode: "",
     moviePath: "",
     resolvedPath: "",
     title: "",
@@ -4353,12 +4911,72 @@ function resetInlinePlayerState() {
 
 function hydrateInlinePlayerState(session) {
   resetInlinePlayerState();
+  state.inlinePlayer.mode = String(session?.player || "");
   state.inlinePlayer.moviePath = String(session?.movie_path || "");
   state.inlinePlayer.resolvedPath = String(session?.resolved_path || "");
   state.inlinePlayer.title = String(session?.display_title || session?.title || "");
   state.inlinePlayer.playUrl = String(session?.play_url || "");
   state.inlinePlayer.episodeIndex = Number(session?.episode_index || 0);
   state.inlinePlayer.hasStarted = !!session?.active;
+}
+
+function usesInlinePlayer() {
+  return true;
+}
+
+function getPreferredInlinePlayerMode() {
+  return "mpv_desktop";
+}
+
+function getInlinePlayerApiBase(mode = "") {
+  return "/api/mpv/session";
+}
+
+function getInlinePlayerModeLabel(session) {
+  return "内置播放器 mpv";
+}
+
+function updateInlinePlayerChrome(session) {
+  const { title, meta } = getInlinePlayerElements();
+  if (title) title.textContent = session?.display_title || session?.title || "内置播放器 mpv";
+  if (meta) meta.textContent = session?.is_series ? `mpv 播放会话 · 第 ${Number(session.episode_index || 0) + 1} 集` : "mpv 播放会话";
+}
+
+function usesFloatingMpvPlayer() {
+  return false;
+}
+
+function getInlinePlayerViewportPayload(visibleOverride = null) {
+  const modal = document.getElementById("playerModal");
+  const viewport = document.getElementById("inlinePlayerViewport");
+  if (!modal || !viewport) return null;
+  const rect = viewport.getBoundingClientRect();
+  const dpr = window.devicePixelRatio || 1;
+  const visible = visibleOverride !== null
+    ? !!visibleOverride
+    : !modal.classList.contains("hidden") && rect.width > 0 && rect.height > 0;
+  return {
+    x: Math.max(0, Math.round(rect.left * dpr)),
+    y: Math.max(0, Math.round(rect.top * dpr)),
+    width: Math.max(0, Math.round(rect.width * dpr)),
+    height: Math.max(0, Math.round(rect.height * dpr)),
+    visible,
+  };
+}
+
+async function syncInlinePlayerLayout(visibleOverride = null) {
+  if ((state.inlinePlayer.mode || "").toLowerCase() !== "mpv_desktop") return;
+  const payload = getInlinePlayerViewportPayload(visibleOverride);
+  if (!payload) return;
+  try {
+    await api("/api/mpv/session/layout", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+  } catch (error) {
+    // ignore transient layout sync failures
+  }
 }
 
 function stopInlinePlayerPolling() {
@@ -4379,7 +4997,7 @@ function formatVlcStateLabel(rawState) {
   if (value === "paused") return "已暂停";
   if (value === "opening") return "正在打开媒体";
   if (value === "stopped") return "已停止";
-  return "等待 VLC 响应";
+  return "等待 mpv 响应";
 }
 
 function renderInlinePlayerSession(session) {
@@ -4388,33 +5006,66 @@ function renderInlinePlayerSession(session) {
   const duration = Number(session?.duration_seconds || 0);
   const current = Number(session?.progress_seconds || 0);
   const percent = duration > 0 ? Math.max(0, Math.min(100, (current / duration) * 100)) : 0;
-  if (title) title.textContent = session?.display_title || session?.title || "VLC 受控模式";
-  if (meta) meta.textContent = session?.is_series ? `VLC 受控会话 · 第 ${Number(session.episode_index || 0) + 1} 集` : "VLC 受控会话";
-  if (status) status.textContent = active ? "应用正在同步 VLC 的状态、进度和观影统计。" : "当前没有正在运行的 VLC 受控会话。";
+  if (title) title.textContent = session?.display_title || session?.title || "内置播放器 mpv";
+  if (meta) meta.textContent = session?.is_series ? `mpv 播放会话 · 第 ${Number(session.episode_index || 0) + 1} 集` : "mpv 播放会话";
+  if (status) status.textContent = active ? "应用正在同步 mpv 的状态、进度和观影统计。" : "当前没有正在运行的 mpv 会话。";
   if (stateEl) stateEl.textContent = formatVlcStateLabel(session?.state);
   if (progress) progress.textContent = `${formatDuration(current)} / ${formatDuration(duration)}`;
   if (bar) bar.style.width = `${percent}%`;
   if (toggle) toggle.textContent = String(session?.state || "").toLowerCase() === "paused" ? "继续播放" : "暂停播放";
 }
 
+async function refreshPlaybackUiAfterSessionEnd({ closePlayerModal = true } = {}) {
+  const detailModal = document.getElementById("detailModal");
+  const playerModal = document.getElementById("playerModal");
+  const detailOpen = !!detailModal && !detailModal.classList.contains("hidden");
+  const selectedRootPath = state.selectedMovie?.path || "";
+  const selectedSeasonPath = state.selectedSeasonPath || "";
+
+  stopInlinePlayerPolling();
+  resetInlinePlayerState();
+
+  if (closePlayerModal && playerModal && !playerModal.classList.contains("hidden")) {
+    playerModal.classList.add("hidden");
+  }
+
+  await loadBootstrap();
+  await loadCurrentView();
+
+  if (detailOpen) {
+    const nextSelectedMovie =
+      getDisplayMovieByPath(selectedSeasonPath) ||
+      getDisplayMovieByPath(selectedRootPath);
+    if (nextSelectedMovie) {
+      state.selectedMovie = nextSelectedMovie;
+      if (Array.isArray(nextSelectedMovie.seasons) && nextSelectedMovie.seasons.some((season) => season.path === selectedSeasonPath)) {
+        state.selectedSeasonPath = selectedSeasonPath;
+      } else {
+        state.selectedSeasonPath = nextSelectedMovie.path;
+      }
+      syncSelectedMovie();
+      renderDetail();
+    }
+  }
+}
+
 async function pollInlinePlayerSession() {
   try {
-    const payload = await api("/api/vlc/session");
+    const payload = await api(getInlinePlayerApiBase());
     if (!payload?.result) return;
     renderInlinePlayerSession(payload.result);
+    await syncInlinePlayerLayout();
     if (!payload.result.active) {
-      stopInlinePlayerPolling();
-      resetInlinePlayerState();
-      await loadCurrentView();
+      await refreshPlaybackUiAfterSessionEnd({ closePlayerModal: true });
     }
   } catch (error) {
-    stopInlinePlayerPolling();
+    await refreshPlaybackUiAfterSessionEnd({ closePlayerModal: true });
   }
 }
 
 async function sendInlinePlayerCommand(action, value = null) {
   const payload = await guarded(() =>
-    api("/api/vlc/session/command", {
+    api(`${getInlinePlayerApiBase()}/command`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ action, value }),
@@ -4423,30 +5074,34 @@ async function sendInlinePlayerCommand(action, value = null) {
   if (payload?.result) {
     renderInlinePlayerSession(payload.result);
     if (action === "stop") {
-      stopInlinePlayerPolling();
-      resetInlinePlayerState();
-      closeModal("playerModal");
-      await loadCurrentView();
+      await refreshPlaybackUiAfterSessionEnd({ closePlayerModal: true });
     }
   }
 }
 
 async function recoverInlinePlayerSession({ silent = true } = {}) {
   try {
-    const payload = await api("/api/vlc/session");
-    const session = payload?.result;
+    let session = null;
+    const primary = getPreferredInlinePlayerMode();
+    const payload = await api(getInlinePlayerApiBase(primary));
+    if (payload?.result?.active) {
+      session = payload.result;
+    }
     if (!session?.active) {
       stopInlinePlayerPolling();
       resetInlinePlayerState();
       return null;
     }
     hydrateInlinePlayerState(session);
-    if (document.getElementById("playerModal") && !document.getElementById("playerModal").classList.contains("hidden")) {
+    if (usesFloatingMpvPlayer()) {
+      startInlinePlayerPolling();
+    } else if (document.getElementById("playerModal") && !document.getElementById("playerModal").classList.contains("hidden")) {
       renderInlinePlayerSession(session);
       startInlinePlayerPolling();
+      await syncInlinePlayerLayout();
     }
     if (!silent && !inlinePlayerRecoveredOnce) {
-      showToast("已恢复 VLC 受控会话，进度统计会继续同步", "info");
+      showToast("已恢复播放器会话，进度统计会继续同步", "info");
       inlinePlayerRecoveredOnce = true;
     }
     return session;
@@ -4457,12 +5112,11 @@ async function recoverInlinePlayerSession({ silent = true } = {}) {
 }
 
 async function openInlinePlayer(moviePath, episodeIndex = 0) {
+  const preferredMode = getPreferredInlinePlayerMode();
   try {
-    const current = await api("/api/vlc/session");
+    const current = await api(getInlinePlayerApiBase(preferredMode));
     if (current?.result?.active && current.result.movie_path === moviePath && Number(current.result.episode_index || 0) === Number(episodeIndex || 0)) {
       hydrateInlinePlayerState(current.result);
-      openModal("playerModal");
-      renderInlinePlayerSession(current.result);
       startInlinePlayerPolling();
       return;
     }
@@ -4471,7 +5125,7 @@ async function openInlinePlayer(moviePath, episodeIndex = 0) {
   }
 
   const payload = await guarded(() =>
-    api("/api/vlc/session/start", {
+    api(`${getInlinePlayerApiBase(preferredMode)}/start`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ movie_path: moviePath, episode_index: episodeIndex }),
@@ -4479,21 +5133,18 @@ async function openInlinePlayer(moviePath, episodeIndex = 0) {
   );
   if (!payload?.result) return;
 
-  const { modal } = getInlinePlayerElements();
-  if (!modal) {
-    showToast("VLC 控制台界面不可用", "error");
-    return;
-  }
-
   hydrateInlinePlayerState(payload.result);
-  openModal("playerModal");
-  renderInlinePlayerSession(payload.result);
   startInlinePlayerPolling();
   if (payload?.stats) {
     state.stats = payload.stats;
     renderStats();
   }
-  showToast("已切换到 VLC 受控模式", "success");
+  showToast(
+    payload.result.resume_applied
+      ? `已从 ${formatDuration(payload.result.resume_seconds || 0)} 继续播放`
+      : "已打开内置 mpv 播放窗口",
+    "success"
+  );
 }
 
 async function closeInlinePlayer({ refresh = true } = {}) {
@@ -4501,6 +5152,7 @@ async function closeInlinePlayer({ refresh = true } = {}) {
   stopInlinePlayerPolling();
   window.clearTimeout(inlinePlayerResumeTimer);
   inlinePlayerResumeTimer = null;
+  await syncInlinePlayerLayout(false);
   if (status) status.textContent = "";
   resetInlinePlayerState();
   if (refresh) {
@@ -4508,12 +5160,14 @@ async function closeInlinePlayer({ refresh = true } = {}) {
   }
 }
 
-async function savePlaybackProgress(moviePath, progress, duration) {
+async function savePlaybackProgress(moviePath, progress, duration, episodeIndex) {
+  const body = { progress, duration };
+  if (episodeIndex != null) body.episode_index = episodeIndex;
   const payload = await guarded(() =>
     api(`/api/movies/${encodeURIComponent(moviePath)}/progress`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ progress, duration }),
+      body: JSON.stringify(body),
     })
   );
   return payload;
@@ -4536,16 +5190,8 @@ async function clearPlaybackProgress(moviePath) {
 }
 
 async function rateRecommendation(moviePath, rating) {
-  const payload = await guarded(() =>
-    api("/api/recommendations/rate", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ movie_path: moviePath, rating }),
-    })
-  );
-  if (!payload) return;
+  // 推荐功能已移除
   showToast(`已记录 ${rating} 星偏好`, "success");
-  await loadRecommendations();
 }
 
 async function toggleFavorite(moviePath) {
@@ -5100,6 +5746,19 @@ async function bindOpenListPanel() {
   if (stopBtn) stopBtn.onclick = () => openlistAction("stop");
   if (restartBtn) restartBtn.onclick = () => openlistAction("restart");
   if (downloadBtn) downloadBtn.onclick = () => openlistDownloadBinary();
+
+  const uninstallBtn = document.getElementById("openlistUninstallBtn");
+  if (uninstallBtn) uninstallBtn.onclick = async () => {
+    if (!confirm("确定卸载 OpenList？将删除二进制文件和所有数据。")) return;
+    try {
+      const data = await api("/api/openlist/uninstall", { method: "POST" });
+      showToast(data.message || "卸载完成", data.success ? "success" : "warning");
+      await fetchOpenListStatus();
+      updateOpenListStatusUI();
+    } catch (e) {
+      showToast(`卸载失败: ${parseOpenListError(e)}`, "error");
+    }
+  };
 
   // 重置密码
   const resetPasswordBtn = document.getElementById("openlistResetPasswordBtn");

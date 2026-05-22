@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>鸡米花</title>
+  <title>MoviePop</title>
   <link rel="stylesheet" href="/assets/styles.css">
   <script src="https://cdn.bootcdn.net/ajax/libs/echarts/5.4.3/echarts.min.js"></script>
 </head>
@@ -12,7 +12,7 @@
     <aside class="sidebar">
       <div class="brand-block">
         <span class="brand-kicker">家庭影视库</span>
-        <h1>鸡米花</h1>
+        <h1>MoviePop</h1>
         <p>合并本地与 WebDAV 的家庭影视库</p>
       </div>
 
@@ -76,17 +76,20 @@
   <div class="modal hidden" id="playerModal">
     <div class="modal-backdrop" data-close="playerModal"></div>
     <div class="modal-panel player-panel">
-      <button class="modal-close" data-close="playerModal">鍏抽棴</button>
+      <button class="modal-close" data-close="playerModal">关闭</button>
       <div class="inline-player-shell vlc-control-shell">
         <div class="inline-player-head">
           <div>
-            <span class="section-eyebrow">鍐呯疆鎾斁鍣?/span>
-            <h3 id="inlinePlayerTitle">姝ｅ湪鍑嗗鎾斁</h3>
-            <p id="inlinePlayerMeta">搴旂敤鍐呰褰曟挱鏀捐繘搴﹀拰瑙傚奖缁熻</p>
+            <span class="section-eyebrow">内置播放器</span>
+            <h3 id="inlinePlayerTitle">正在准备播放</h3>
+            <p id="inlinePlayerMeta">应用内记录播放进度和观影统计</p>
           </div>
           <div class="inline-player-status" id="inlinePlayerStatus"></div>
         </div>
         <div class="inline-player-stage vlc-control-stage">
+          <div class="inline-player-viewport-frame">
+            <div class="inline-player-viewport" id="inlinePlayerViewport"></div>
+          </div>
           <div class="vlc-stage-copy">
             <div class="vlc-stage-title" id="vlcSessionState">等待启动</div>
             <div class="vlc-stage-meta" id="vlcSessionProgress">0:00 / 0:00</div>
@@ -94,9 +97,49 @@
           <div class="vlc-progress-track">
             <span id="vlcSessionBar"></span>
           </div>
+          <div class="inline-control-bar">
+            <div class="inline-control-group">
+              <button class="inline-icon-btn volume-btn" type="button" id="inlineVolumeBtn" title="静音">
+                <span>音量</span>
+              </button>
+              <input class="inline-volume-slider" id="inlineVolumeSlider" type="range" min="0" max="100" value="100" step="1">
+            </div>
+            <div class="inline-control-group compact">
+              <button class="inline-icon-btn" type="button" id="inlineSpeedBtn" title="倍速">1x</button>
+              <button class="inline-icon-btn" type="button" id="inlineQualityBtn" title="画质">画质</button>
+              <button class="inline-icon-btn" type="button" id="inlineSubtitleBtn" title="字幕">字幕</button>
+              <button class="inline-icon-btn" type="button" id="inlineAudioBtn" title="音轨">音轨</button>
+              <button class="inline-icon-btn" type="button" id="inlineSettingsBtn" title="设置">设置</button>
+            </div>
+            <div class="inline-control-group compact">
+              <button class="inline-icon-btn primary" type="button" data-vlc-command="toggle" id="vlcToggleBtn" title="暂停或继续">暂停</button>
+              <button class="inline-icon-btn" type="button" id="inlineFullscreenBtn" title="全屏">全屏</button>
+            </div>
+          </div>
+          <div class="inline-panel-grid">
+            <div class="inline-option-panel" id="inlineSpeedPanel">
+              <div class="inline-panel-title">倍速</div>
+              <div class="inline-chip-row" id="inlineSpeedOptions"></div>
+            </div>
+            <div class="inline-option-panel" id="inlineQualityPanel">
+              <div class="inline-panel-title">画质</div>
+              <div class="inline-chip-row" id="inlineQualityOptions"></div>
+            </div>
+            <div class="inline-option-panel" id="inlineSubtitlePanel">
+              <div class="inline-panel-title">字幕</div>
+              <div class="inline-chip-row" id="inlineSubtitleOptions"></div>
+            </div>
+            <div class="inline-option-panel" id="inlineAudioPanel">
+              <div class="inline-panel-title">音轨</div>
+              <div class="inline-chip-row" id="inlineAudioOptions"></div>
+            </div>
+            <div class="inline-option-panel" id="inlineSettingsPanel">
+              <div class="inline-panel-title">设置</div>
+              <div class="inline-chip-row" id="inlineSettingsOptions"></div>
+            </div>
+          </div>
           <div class="vlc-control-actions">
             <button class="ghost-btn" type="button" data-vlc-command="seek_backward">后退 15 秒</button>
-            <button class="primary-btn" type="button" data-vlc-command="toggle" id="vlcToggleBtn">暂停 / 继续</button>
             <button class="ghost-btn" type="button" data-vlc-command="seek_forward">前进 15 秒</button>
             <button class="ghost-btn danger" type="button" data-vlc-command="stop">停止播放</button>
           </div>
@@ -104,7 +147,6 @@
       </div>
     </div>
   </div>
-
   <div class="modal hidden" id="editModal">
     <div class="modal-backdrop" data-close="editModal"></div>
     <div class="modal-panel compact-panel">
@@ -119,7 +161,7 @@
           <input name="title" required>
         </label>
         <label>
-          <span>刮削名称</span>
+          <span>别名名称</span>
           <input name="name" required>
         </label>
         <label>
@@ -161,7 +203,7 @@
           <button class="ghost-btn" id="dirSelectCurrentBtn">选当前目录</button>
           <span id="dirCurrentPath">/</span>
         </div>
-        <input type="text" id="dirSearchInput" class="dir-search-input" placeholder="搜索目录…" style="display:none;">
+        <input type="text" id="dirSearchInput" class="dir-search-input" placeholder="搜索目录" style="display:none;">
         <div class="directory-list" id="directoryList"></div>
         <div class="form-actions">
           <button class="ghost-btn" data-close="directoryModal">取消</button>

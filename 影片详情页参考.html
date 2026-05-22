@@ -1,0 +1,1144 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>我的私人影视库</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        }
+
+        :root {
+            --bg-primary: #0a0a0f;
+            --bg-secondary: #12121a;
+            --glass-bg: rgba(255, 255, 255, 0.06);
+            --glass-border: rgba(255, 255, 255, 0.12);
+            --text-primary: #ffffff;
+            --text-secondary: #a0a0b0;
+            --accent: #6366f1;
+            --accent-hover: #818cf8;
+            --success: #10b981;
+            --warning: #f59e0b;
+        }
+
+        body {
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            min-height: 100vh;
+            overflow-x: hidden;
+        }
+
+        /* 导航栏 - 毛玻璃效果 */
+        .nav {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            z-index: 1000;
+            padding: 16px 40px;
+            background: var(--glass-bg);
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
+            border-bottom: 1px solid var(--glass-border);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            transition: all 0.3s ease;
+        }
+
+        .nav.scrolled {
+            background: rgba(10, 10, 15, 0.9);
+            backdrop-filter: blur(30px);
+        }
+
+        .logo {
+            font-size: 22px;
+            font-weight: 700;
+            background: linear-gradient(135deg, #6366f1, #a855f7);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        .search-container {
+            position: relative;
+        }
+
+        .search {
+            padding: 10px 16px 10px 40px;
+            border-radius: 12px;
+            border: 1px solid var(--glass-border);
+            background: var(--glass-bg);
+            color: var(--text-primary);
+            width: 320px;
+            font-size: 14px;
+            outline: none;
+            transition: all 0.2s ease;
+        }
+
+        .search:focus {
+            border-color: var(--accent);
+            box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.1);
+        }
+
+        .search-icon {
+            position: absolute;
+            left: 14px;
+            top: 50%;
+            transform: translateY(-50%);
+            color: var(--text-secondary);
+        }
+
+        .nav-right {
+            display: flex;
+            gap: 24px;
+            align-items: center;
+        }
+
+        .nav-btn {
+            background: transparent;
+            border: none;
+            color: var(--text-secondary);
+            font-size: 15px;
+            cursor: pointer;
+            padding: 8px 12px;
+            border-radius: 8px;
+            transition: all 0.2s ease;
+        }
+
+        .nav-btn:hover {
+            color: var(--text-primary);
+            background: var(--glass-bg);
+        }
+
+        .nav-btn.active {
+            color: var(--text-primary);
+            background: var(--accent);
+        }
+
+        /* 返回按钮 */
+        .back-btn {
+            display: none;
+            align-items: center;
+            gap: 8px;
+            background: var(--glass-bg);
+            border: 1px solid var(--glass-border);
+            color: var(--text-primary);
+            padding: 8px 16px;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+
+        .back-btn:hover {
+            background: var(--glass-border);
+        }
+
+        .back-btn.visible {
+            display: flex;
+        }
+
+        /* 容器 */
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 100px 40px 40px;
+        }
+
+        /* 分类标签 */
+        .category {
+            display: flex;
+            gap: 12px;
+            margin-bottom: 32px;
+            flex-wrap: wrap;
+        }
+
+        .cate-item {
+            padding: 8px 16px;
+            background: var(--glass-bg);
+            border: 1px solid var(--glass-border);
+            border-radius: 20px;
+            font-size: 14px;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            color: var(--text-secondary);
+        }
+
+        .cate-item:hover {
+            border-color: var(--accent);
+            color: var(--text-primary);
+        }
+
+        .cate-item.active {
+            background: var(--accent);
+            border-color: var(--accent);
+            color: var(--text-primary);
+        }
+
+        /* 影片网格 */
+        .movie-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+            gap: 24px;
+        }
+
+        .movie-card {
+            border-radius: 16px;
+            overflow: hidden;
+            background: var(--bg-secondary);
+            cursor: pointer;
+            transition: all 0.3s cubic-bezier(0.25, 0.8, 0.25, 1);
+            will-change: transform, box-shadow;
+            position: relative;
+        }
+
+        .movie-card:hover {
+            transform: translateY(-8px) scale(1.03);
+            box-shadow: 0 20px 40px rgba(0, 0, 0, 0.4);
+        }
+
+        .movie-poster {
+            width: 100%;
+            height: 280px;
+            object-fit: cover;
+            background: linear-gradient(135deg, #1a1a2e, #16213e);
+        }
+
+        /* 剧集/动漫角标 */
+        .media-badge {
+            position: absolute;
+            top: 8px;
+            left: 8px;
+            padding: 3px 8px;
+            border-radius: 4px;
+            font-size: 11px;
+            font-weight: 600;
+            z-index: 10;
+        }
+
+        .badge-series {
+            background: var(--accent);
+            color: white;
+        }
+
+        .badge-anime {
+            background: var(--success);
+            color: white;
+        }
+
+        .badge-updating {
+            background: var(--warning);
+            color: black;
+        }
+
+        .movie-info {
+            padding: 14px;
+        }
+
+        .movie-title {
+            font-size: 15px;
+            font-weight: 600;
+            margin-bottom: 6px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .movie-meta {
+            font-size: 12px;
+            color: var(--text-secondary);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .rating {
+            background: rgba(99, 102, 241, 0.2);
+            color: var(--accent-hover);
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-weight: 600;
+        }
+
+        /* 页面切换 */
+        .page {
+            display: none;
+            opacity: 0;
+            transition: opacity 0.3s ease;
+        }
+
+        .page.active {
+            display: block;
+            opacity: 1;
+        }
+
+        /* 详情页 */
+        .detail-hero {
+            position: relative;
+            height: 500px;
+            margin-top: 70px;
+            background-size: cover;
+            background-position: center;
+        }
+
+        .detail-hero::before {
+            content: "";
+            position: absolute;
+            inset: 0;
+            background: linear-gradient(to top, var(--bg-primary) 0%, rgba(10, 10, 15, 0.7) 50%, transparent 100%);
+        }
+
+        .detail-content {
+            position: relative;
+            z-index: 2;
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 0 40px;
+            display: flex;
+            gap: 32px;
+            align-items: flex-end;
+            height: 100%;
+            padding-bottom: 60px;
+        }
+
+        .detail-poster {
+            width: 220px;
+            height: 320px;
+            border-radius: 16px;
+            object-fit: cover;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.6);
+            border: 1px solid var(--glass-border);
+        }
+
+        .detail-main {
+            flex: 1;
+        }
+
+        .detail-title {
+            font-size: 42px;
+            font-weight: 700;
+            margin-bottom: 12px;
+            line-height: 1.2;
+        }
+
+        .detail-meta {
+            display: flex;
+            gap: 16px;
+            align-items: center;
+            margin-bottom: 20px;
+            color: var(--text-secondary);
+            font-size: 15px;
+        }
+
+        .detail-tags {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+            margin-bottom: 24px;
+        }
+
+        .tag {
+            padding: 6px 12px;
+            background: var(--glass-bg);
+            border: 1px solid var(--glass-border);
+            border-radius: 6px;
+            font-size: 13px;
+        }
+
+        .detail-desc {
+            max-width: 700px;
+            line-height: 1.7;
+            color: #d0d0e0;
+            font-size: 15px;
+            margin-bottom: 28px;
+        }
+
+        .action-buttons {
+            display: flex;
+            gap: 16px;
+        }
+
+        .btn {
+            padding: 12px 28px;
+            border-radius: 12px;
+            font-size: 15px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            border: none;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .btn-primary {
+            background: var(--accent);
+            color: white;
+        }
+
+        .btn-primary:hover {
+            background: var(--accent-hover);
+            transform: translateY(-2px);
+        }
+
+        .btn-secondary {
+            background: var(--glass-bg);
+            border: 1px solid var(--glass-border);
+            color: white;
+        }
+
+        .btn-secondary:hover {
+            background: var(--glass-border);
+        }
+
+        .section {
+            margin-top: 60px;
+        }
+
+        .section-title {
+            font-size: 24px;
+            font-weight: 700;
+            margin-bottom: 24px;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .section-title::before {
+            content: "";
+            width: 4px;
+            height: 24px;
+            background: var(--accent);
+            border-radius: 2px;
+        }
+
+        .info-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 20px;
+        }
+
+        .info-card {
+            background: var(--glass-bg);
+            border: 1px solid var(--glass-border);
+            border-radius: 12px;
+            padding: 20px;
+        }
+
+        .info-label {
+            font-size: 13px;
+            color: var(--text-secondary);
+            margin-bottom: 8px;
+        }
+
+        .info-value {
+            font-size: 15px;
+            font-weight: 500;
+        }
+
+        /* 剧集季数选择器（详情页用） */
+        .season-selector {
+            display: flex;
+            gap: 8px;
+            margin-bottom: 24px;
+            flex-wrap: wrap;
+        }
+
+        .season-btn {
+            padding: 6px 14px;
+            background: var(--glass-bg);
+            border: 1px solid var(--glass-border);
+            border-radius: 6px;
+            color: var(--text-secondary);
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+
+        .season-btn.active {
+            background: var(--accent);
+            border-color: var(--accent);
+            color: white;
+        }
+
+        .episode-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+            gap: 12px;
+            margin-top: 16px;
+        }
+
+        .episode-card {
+            background: var(--glass-bg);
+            border: 1px solid var(--glass-border);
+            border-radius: 8px;
+            padding: 12px;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+
+        .episode-card:hover {
+            background: var(--glass-border);
+        }
+
+        .episode-card.watched {
+            border-color: var(--success);
+        }
+
+        .episode-num {
+            font-size: 18px;
+            font-weight: 600;
+            margin-bottom: 4px;
+        }
+
+        .episode-title {
+            font-size: 12px;
+            color: var(--text-secondary);
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        /* 响应式 */
+        @media (max-width: 768px) {
+            .nav {
+                padding: 12px 20px;
+            }
+
+            .search {
+                width: 180px;
+            }
+
+            .container {
+                padding: 90px 20px 20px;
+            }
+
+            .movie-grid {
+                grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+                gap: 16px;
+            }
+
+            .movie-poster {
+                height: 210px;
+            }
+
+            .detail-hero {
+                height: auto;
+                padding-top: 40px;
+            }
+
+            .detail-content {
+                flex-direction: column;
+                align-items: center;
+                text-align: center;
+                padding: 0 20px 40px;
+            }
+
+            .detail-poster {
+                width: 180px;
+                height: 260px;
+            }
+
+            .detail-title {
+                font-size: 28px;
+            }
+
+            .detail-meta {
+                justify-content: center;
+                flex-wrap: wrap;
+            }
+
+            .detail-tags {
+                justify-content: center;
+            }
+
+            .action-buttons {
+                justify-content: center;
+            }
+        }
+    </style>
+</head>
+
+<body>
+    <!-- 导航栏 -->
+    <div class="nav" id="navbar">
+        <div class="logo">🎬 私人影视库</div>
+        
+        <div class="search-container">
+            <span class="search-icon">🔍</span>
+            <input type="text" class="search" placeholder="搜索影片、演员、标签...">
+        </div>
+
+        <div class="nav-right">
+            <button class="back-btn" id="backBtn" onclick="showPage('home')">
+                ← 返回首页
+            </button>
+            <button class="nav-btn active" onclick="showPage('home')">首页</button>
+            <button class="nav-btn" onclick="showPage('analytics')">数据分析</button>
+        </div>
+    </div>
+
+    <!-- ====================================== -->
+    <!--                首页                   -->
+    <!-- ====================================== -->
+    <div id="home" class="page active">
+        <div class="container">
+            <div class="category">
+                <div class="cate-item active">全部</div>
+                <div class="cate-item">电影</div>
+                <div class="cate-item">剧集</div>
+                <div class="cate-item">动漫</div>
+                <div class="cate-item">纪录片</div>
+                <div class="cate-item">科幻</div>
+                <div class="cate-item">动作</div>
+                <div class="cate-item">喜剧</div>
+                <div class="cate-item">悬疑</div>
+            </div>
+
+            <div class="movie-grid">
+                <!-- 电影 -->
+                <div class="movie-card" onclick="showPage('detail')">
+                    <img class="movie-poster" src="https://picsum.photos/400/600?random=1">
+                    <div class="movie-info">
+                        <div class="movie-title">星际穿越</div>
+                        <div class="movie-meta">
+                            <span>2014 · 科幻</span>
+                            <span class="rating">9.5</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 多季剧集 -->
+                <div class="movie-card" onclick="showPage('seriesDetail')">
+                    <div class="media-badge badge-series">剧集</div>
+                    <img class="movie-poster" src="https://picsum.photos/400/600?random=21">
+                    <div class="movie-info">
+                        <div class="movie-title">权力的游戏</div>
+                        <div class="movie-meta">
+                            <span>全8季 · 73集</span>
+                            <span class="rating">9.5</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="movie-card" onclick="showPage('seriesDetail')">
+                    <div class="media-badge badge-series">剧集</div>
+                    <img class="movie-poster" src="https://picsum.photos/400/600?random=22">
+                    <div class="movie-info">
+                        <div class="movie-title">绝命毒师</div>
+                        <div class="movie-meta">
+                            <span>全5季 · 62集</span>
+                            <span class="rating">9.6</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="movie-card" onclick="showPage('seriesDetail')">
+                    <div class="media-badge badge-series">剧集</div>
+                    <img class="movie-poster" src="https://picsum.photos/400/600?random=23">
+                    <div class="movie-info">
+                        <div class="movie-title">老友记</div>
+                        <div class="movie-meta">
+                            <span>全10季 · 236集</span>
+                            <span class="rating">9.8</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 连载中剧集 -->
+                <div class="movie-card" onclick="showPage('seriesDetail')">
+                    <div class="media-badge badge-updating">连载中</div>
+                    <img class="movie-poster" src="https://picsum.photos/400/600?random=24">
+                    <div class="movie-info">
+                        <div class="movie-title">真探 第四季</div>
+                        <div class="movie-meta">
+                            <span>更新至第6集</span>
+                            <span class="rating">8.9</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 动漫 -->
+                <div class="movie-card" onclick="showPage('seriesDetail')">
+                    <div class="media-badge badge-anime">动漫</div>
+                    <img class="movie-poster" src="https://picsum.photos/400/600?random=31">
+                    <div class="movie-info">
+                        <div class="movie-title">进击的巨人</div>
+                        <div class="movie-meta">
+                            <span>全4季 · 87集</span>
+                            <span class="rating">9.9</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="movie-card" onclick="showPage('seriesDetail')">
+                    <div class="media-badge badge-anime">动漫</div>
+                    <img class="movie-poster" src="https://picsum.photos/400/600?random=32">
+                    <div class="movie-info">
+                        <div class="movie-title">海贼王</div>
+                        <div class="movie-meta">
+                            <span>更新至1100集</span>
+                            <span class="rating">9.7</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="movie-card" onclick="showPage('seriesDetail')">
+                    <div class="media-badge badge-anime">动漫</div>
+                    <img class="movie-poster" src="https://picsum.photos/400/600?random=33">
+                    <div class="movie-info">
+                        <div class="movie-title">千与千寻</div>
+                        <div class="movie-meta">
+                            <span>剧场版 · 1集</span>
+                            <span class="rating">9.4</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 更多电影 -->
+                <div class="movie-card" onclick="showPage('detail')">
+                    <img class="movie-poster" src="https://picsum.photos/400/600?random=2">
+                    <div class="movie-info">
+                        <div class="movie-title">盗梦空间</div>
+                        <div class="movie-meta">
+                            <span>2010 · 悬疑</span>
+                            <span class="rating">9.4</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="movie-card" onclick="showPage('detail')">
+                    <img class="movie-poster" src="https://picsum.photos/400/600?random=3">
+                    <div class="movie-info">
+                        <div class="movie-title">肖申克的救赎</div>
+                        <div class="movie-meta">
+                            <span>1994 · 剧情</span>
+                            <span class="rating">9.7</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="movie-card" onclick="showPage('detail')">
+                    <img class="movie-poster" src="https://picsum.photos/400/600?random=5">
+                    <div class="movie-info">
+                        <div class="movie-title">泰坦尼克号</div>
+                        <div class="movie-meta">
+                            <span>1997 · 爱情</span>
+                            <span class="rating">9.5</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="movie-card" onclick="showPage('detail')">
+                    <img class="movie-poster" src="https://picsum.photos/400/600?random=6">
+                    <div class="movie-info">
+                        <div class="movie-title">黑客帝国</div>
+                        <div class="movie-meta">
+                            <span>1999 · 科幻</span>
+                            <span class="rating">9.1</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="movie-card" onclick="showPage('detail')">
+                    <img class="movie-poster" src="https://picsum.photos/400/600?random=7">
+                    <div class="movie-info">
+                        <div class="movie-title">火星救援</div>
+                        <div class="movie-meta">
+                            <span>2015 · 科幻</span>
+                            <span class="rating">8.5</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="movie-card" onclick="showPage('detail')">
+                    <img class="movie-poster" src="https://picsum.photos/400/600?random=8">
+                    <div class="movie-info">
+                        <div class="movie-title">银翼杀手2049</div>
+                        <div class="movie-meta">
+                            <span>2017 · 科幻</span>
+                            <span class="rating">8.3</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ====================================== -->
+    <!--              电影详情页                -->
+    <!-- ====================================== -->
+    <div id="detail" class="page">
+        <div class="detail-hero" style="background-image: url(https://picsum.photos/1920/1080?random=10)">
+            <div class="detail-content">
+                <img class="detail-poster" src="https://picsum.photos/400/600?random=1">
+                <div class="detail-main">
+                    <h1 class="detail-title">星际穿越</h1>
+                    <div class="detail-meta">
+                        <span>2014</span>
+                        <span>美国</span>
+                        <span>169分钟</span>
+                        <span class="rating">9.5</span>
+                    </div>
+                    <div class="detail-tags">
+                        <span class="tag">科幻</span>
+                        <span class="tag">冒险</span>
+                        <span class="tag">剧情</span>
+                        <span class="tag">诺兰</span>
+                    </div>
+                    <p class="detail-desc">
+                        不远的未来，地球气候已经不适合人类生存。一队探险家承担了人类历史上最重要的任务：穿越虫洞，穿越星际，去寻找适合人类居住的新家园。
+                        克里斯托弗·诺兰执导的经典神作，关于父爱、时空与人类文明的终极浪漫。
+                    </p>
+                    <div class="action-buttons">
+                        <button class="btn btn-primary">▶ 立即播放</button>
+                        <button class="btn btn-secondary">⭐ 收藏</button>
+                        <button class="btn btn-secondary">📁 打开文件夹</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="container">
+            <div class="section">
+                <h2 class="section-title">文件信息</h2>
+                <div class="info-grid">
+                    <div class="info-card">
+                        <div class="info-label">存储路径</div>
+                        <div class="info-value">/阿里云盘/影视/科幻/星际穿越.mkv</div>
+                    </div>
+                    <div class="info-card">
+                        <div class="info-label">文件大小</div>
+                        <div class="info-value">18.4 GB</div>
+                    </div>
+                    <div class="info-card">
+                        <div class="info-label">画质规格</div>
+                        <div class="info-value">4K HDR · 5.1声道</div>
+                    </div>
+                    <div class="info-card">
+                        <div class="info-label">字幕信息</div>
+                        <div class="info-value">内置中英双语字幕</div>
+                    </div>
+                    <div class="info-card">
+                        <div class="info-label">最近播放</div>
+                        <div class="info-value">2026-05-15 20:30</div>
+                    </div>
+                    <div class="info-card">
+                        <div class="info-label">播放进度</div>
+                        <div class="info-value">78% · 2小时12分钟</div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="section">
+                <h2 class="section-title">相关推荐</h2>
+                <div class="movie-grid">
+                    <div class="movie-card" onclick="showPage('detail')">
+                        <img class="movie-poster" src="https://picsum.photos/400/600?random=11">
+                        <div class="movie-info">
+                            <div class="movie-title">火星救援</div>
+                            <div class="movie-meta">
+                                <span>2015 · 科幻</span>
+                                <span class="rating">8.5</span>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="movie-card" onclick="showPage('detail')">
+                        <img class="movie-poster" src="https://picsum.photos/400/600?random=12">
+                        <div class="movie-info">
+                            <div class="movie-title">银翼杀手2049</div>
+                            <div class="movie-meta">
+                                <span>2017 · 科幻</span>
+                                <span class="rating">8.3</span>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="movie-card" onclick="showPage('detail')">
+                        <img class="movie-poster" src="https://picsum.photos/400/600?random=13">
+                        <div class="movie-info">
+                            <div class="movie-title">沙丘</div>
+                            <div class="movie-meta">
+                                <span>2021 · 科幻</span>
+                                <span class="rating">8.0</span>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="movie-card" onclick="showPage('detail')">
+                        <img class="movie-poster" src="https://picsum.photos/400/600?random=14">
+                        <div class="movie-info">
+                            <div class="movie-title">降临</div>
+                            <div class="movie-meta">
+                                <span>2016 · 科幻</span>
+                                <span class="rating">7.8</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ====================================== -->
+    <!--              剧集详情页                -->
+    <!-- ====================================== -->
+    <div id="seriesDetail" class="page">
+        <div class="detail-hero" style="background-image: url(https://picsum.photos/1920/1080?random=20)">
+            <div class="detail-content">
+                <img class="detail-poster" src="https://picsum.photos/400/600?random=21">
+                <div class="detail-main">
+                    <h1 class="detail-title">权力的游戏</h1>
+                    <div class="detail-meta">
+                        <span>2011-2019</span>
+                        <span>美国</span>
+                        <span>全8季 · 73集</span>
+                        <span class="rating">9.5</span>
+                    </div>
+                    <div class="detail-tags">
+                        <span class="tag">剧情</span>
+                        <span class="tag">奇幻</span>
+                        <span class="tag">冒险</span>
+                        <span class="tag">HBO</span>
+                    </div>
+                    <p class="detail-desc">
+                        故事背景中虚构的世界，分为两片大陆：位于西面的"维斯特洛"和位于东面的"厄斯索斯"。
+                        维斯特洛大陆边境处发现远古传说中早已灭绝的生物开始，危险也渐渐在靠近这里。
+                        七大王国之间的权力斗争愈演愈烈，而一个被遗忘的种族在北方悄然崛起。
+                    </p>
+                    <div class="action-buttons">
+                        <button class="btn btn-primary">▶ 继续观看 S08E06</button>
+                        <button class="btn btn-secondary">⭐ 收藏</button>
+                        <button class="btn btn-secondary">📁 打开文件夹</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="container">
+            <div class="section">
+                <h2 class="section-title">选择季数</h2>
+                <div class="season-selector">
+                    <button class="season-btn active">第1季</button>
+                    <button class="season-btn">第2季</button>
+                    <button class="season-btn">第3季</button>
+                    <button class="season-btn">第4季</button>
+                    <button class="season-btn">第5季</button>
+                    <button class="season-btn">第6季</button>
+                    <button class="season-btn">第7季</button>
+                    <button class="season-btn">第8季</button>
+                </div>
+
+                <h3 style="margin-bottom: 16px; color: var(--text-secondary); font-size: 16px;">第1季 · 10集全</h3>
+                <div class="episode-grid">
+                    <div class="episode-card watched">
+                        <div class="episode-num">01</div>
+                        <div class="episode-title">凛冬将至</div>
+                    </div>
+                    <div class="episode-card watched">
+                        <div class="episode-num">02</div>
+                        <div class="episode-title">国王大道</div>
+                    </div>
+                    <div class="episode-card watched">
+                        <div class="episode-num">03</div>
+                        <div class="episode-title">雪诺大人</div>
+                    </div>
+                    <div class="episode-card watched">
+                        <div class="episode-num">04</div>
+                        <div class="episode-title">残缺之躯</div>
+                    </div>
+                    <div class="episode-card watched">
+                        <div class="episode-num">05</div>
+                        <div class="episode-title">狮狼之争</div>
+                    </div>
+                    <div class="episode-card watched">
+                        <div class="episode-num">06</div>
+                        <div class="episode-title">黄金王冠</div>
+                    </div>
+                    <div class="episode-card watched">
+                        <div class="episode-num">07</div>
+                        <div class="episode-title">赢或死</div>
+                    </div>
+                    <div class="episode-card watched">
+                        <div class="episode-num">08</div>
+                        <div class="episode-title">剑之尖端</div>
+                    </div>
+                    <div class="episode-card watched">
+                        <div class="episode-num">09</div>
+                        <div class="episode-title">贝勒圣堂</div>
+                    </div>
+                    <div class="episode-card">
+                        <div class="episode-num">10</div>
+                        <div class="episode-title">血火同源</div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="section">
+                <h2 class="section-title">文件信息</h2>
+                <div class="info-grid">
+                    <div class="info-card">
+                        <div class="info-label">存储路径</div>
+                        <div class="info-value">/阿里云盘/剧集/权力的游戏/</div>
+                    </div>
+                    <div class="info-card">
+                        <div class="info-label">总大小</div>
+                        <div class="info-value">126.8 GB</div>
+                    </div>
+                    <div class="info-card">
+                        <div class="info-label">画质规格</div>
+                        <div class="info-value">1080P BluRay</div>
+                    </div>
+                    <div class="info-card">
+                        <div class="info-label">字幕信息</div>
+                        <div class="info-value">外挂中英双语字幕</div>
+                    </div>
+                    <div class="info-card">
+                        <div class="info-label">已观看</div>
+                        <div class="info-value">72/73集</div>
+                    </div>
+                    <div class="info-card">
+                        <div class="info-label">上次观看</div>
+                        <div class="info-value">2026-05-18 22:15</div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="section">
+                <h2 class="section-title">相关推荐</h2>
+                <div class="movie-grid">
+                    <div class="movie-card" onclick="showPage('seriesDetail')">
+                        <div class="media-badge badge-series">剧集</div>
+                        <img class="movie-poster" src="https://picsum.photos/400/600?random=25">
+                        <div class="movie-info">
+                            <div class="movie-title">龙之家族</div>
+                            <div class="movie-meta">
+                                <span>全1季 · 10集</span>
+                                <span class="rating">8.8</span>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="movie-card" onclick="showPage('seriesDetail')">
+                        <div class="media-badge badge-series">剧集</div>
+                        <img class="movie-poster" src="https://picsum.photos/400/600?random=26">
+                        <div class="movie-info">
+                            <div class="movie-title">指环王：力量之戒</div>
+                            <div class="movie-meta">
+                                <span>更新至第8集</span>
+                                <span class="rating">7.5</span>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="movie-card" onclick="showPage('seriesDetail')">
+                        <div class="media-badge badge-series">剧集</div>
+                        <img class="movie-poster" src="https://picsum.photos/400/600?random=27">
+                        <div class="movie-info">
+                            <div class="movie-title">西部世界</div>
+                            <div class="movie-meta">
+                                <span>全4季 · 36集</span>
+                                <span class="rating">8.9</span>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="movie-card" onclick="showPage('seriesDetail')">
+                        <div class="media-badge badge-series">剧集</div>
+                        <img class="movie-poster" src="https://picsum.photos/400/600?random=28">
+                        <div class="movie-info">
+                            <div class="movie-title">绝命毒师</div>
+                            <div class="movie-meta">
+                                <span>全5季 · 62集</span>
+                                <span class="rating">9.6</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ====================================== -->
+    <!--              数据分析页                -->
+    <!-- ====================================== -->
+    <div id="analytics" class="page">
+        <div class="container">
+            <h2 class="section-title">数据分析</h2>
+            <p style="color: var(--text-secondary); margin-bottom: 32px;">
+                基于你的观影行为生成的个人影视数据分析报告
+            </p>
+            
+            <div style="text-align: center; padding: 60px; background: var(--glass-bg); border-radius: 16px; border: 1px solid var(--glass-border);">
+                <h3>数据分析功能开发中</h3>
+                <p style="color: var(--text-secondary); margin-top: 12px;">
+                    即将集成：观影统计、用户画像、MBTI观影人格分析
+                </p>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // 页面切换函数
+        function showPage(pageName) {
+            // 隐藏所有页面
+            document.querySelectorAll('.page').forEach(page => {
+                page.classList.remove('active');
+            });
+            
+            // 显示目标页面
+            document.getElementById(pageName).classList.add('active');
+            
+            // 更新导航按钮状态
+            document.querySelectorAll('.nav-btn').forEach(btn => {
+                btn.classList.remove('active');
+            });
+            
+            // 显示/隐藏返回按钮
+            const backBtn = document.getElementById('backBtn');
+            if (pageName === 'detail' || pageName === 'seriesDetail') {
+                backBtn.classList.add('visible');
+            } else {
+                backBtn.classList.remove('visible');
+                // 高亮对应的导航按钮
+                document.querySelector(`.nav-btn[onclick="showPage('${pageName}')"]`).classList.add('active');
+            }
+            
+            // 滚动到顶部
+            window.scrollTo({ top: 0, behavior: 'smooth' });
+        }
+
+        // 导航栏滚动效果
+        window.addEventListener('scroll', () => {
+            const navbar = document.getElementById('navbar');
+            if (window.scrollY > 50) {
+                navbar.classList.add('scrolled');
+            } else {
+                navbar.classList.remove('scrolled');
+            }
+        });
+
+        // 分类标签点击效果
+        document.querySelectorAll('.cate-item').forEach(item => {
+            item.addEventListener('click', () => {
+                document.querySelectorAll('.cate-item').forEach(i => i.classList.remove('active'));
+                item.classList.add('active');
+            });
+        });
+
+        // 季数选择效果
+        document.querySelectorAll('.season-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                document.querySelectorAll('.season-btn').forEach(b => b.classList.remove('active'));
+                btn.classList.add('active');
+            });
+        });
+
+        // 集数点击效果
+        document.querySelectorAll('.episode-card').forEach(card => {
+            card.addEventListener('click', () => {
+                alert(`正在播放：${card.querySelector('.episode-num').textContent} ${card.querySelector('.episode-title').textContent}`);
+            });
+        });
+    </script>
+</body>
+</html>

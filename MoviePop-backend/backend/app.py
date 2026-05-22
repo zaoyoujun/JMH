@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -22,10 +23,10 @@ from backend.services import (
     LibraryService,
     OpenListService,
     PlaybackService,
-    RecommendationService,
     ReportService,
     ScraperService,
 )
+from backend.behavior_analytics import BehaviorAnalyticsService
 from config.app_config import AppConfig
 from core.openlist_manager import openlist_manager
 from core.remote_source import infer_remote_provider, make_remote_client
@@ -40,9 +41,9 @@ config_service = ConfigService()
 library_service = LibraryService()
 playback_service = PlaybackService(library_service)
 scraper_service = ScraperService(library_service)
-recommendation_service = RecommendationService(library_service)
-report_service = ReportService(library_service, recommendation_service)
+report_service = ReportService(library_service)
 openlist_service = OpenListService()
+behavior_analytics_service = BehaviorAnalyticsService(data_dir=str(BASE_DIR / "data"))
 
 
 @asynccontextmanager
@@ -54,7 +55,7 @@ async def lifespan(app: FastAPI):
         except Exception as exc:
             logger.warning("OpenList 自动启动失败: %s", exc)
     yield
-    playback_service.stop_vlc_controlled_session()
+    playback_service.stop_mpv_controlled_session()
     openlist_manager.stop()
 
 # \u6d41\u5a92\u4f53 URL \u7f13\u5b58
@@ -87,13 +88,13 @@ class ConfigPayload(BaseModel):
     saved_mount_dirs: list[str] = Field(default_factory=list)
     local_scan_max_depth: int = 3
     local_mount_dirs: list[str] = Field(default_factory=list)
-    potplayer_path: str = ""
-    vlc_path: str = ""
-    default_player: str = "potplayer"
+    mpv_path: str = ""
+    default_player: str = "mpv_desktop"
     video_formats: list[str] = Field(default_factory=list)
     enable_auto_scrape: bool = True
     scrape_source: str = "auto"
     tmdb_api_key: str = ""
+    douban_cookie: str = ""
     tmdb_api_base: str = "https://api.themoviedb.org/3"
     tmdb_web_base: str = "https://www.themoviedb.org"
     tmdb_image_base: str = "https://image.tmdb.org/t/p/w500"
@@ -110,7 +111,7 @@ class PlayPayload(MoviePathPayload):
     episode_index: int = 0
 
 
-class VLCControlPayload(BaseModel):
+class SessionControlPayload(BaseModel):
     action: str
     value: str | None = None
 
@@ -127,16 +128,12 @@ class CandidateApplyPayload(MoviePathPayload):
     candidate: dict[str, Any]
 
 
-class RecommendationRatingPayload(MoviePathPayload):
-    rating: float = Field(ge=0, le=5)
-
-
 class DirectoryBrowsePayload(ConfigPayload):
     path: str = "/"
 
 
 class PlayerPathPickPayload(BaseModel):
-    player: str = "potplayer"
+    player: str = "mpv"
     current_path: str = ""
 
 
@@ -231,7 +228,7 @@ def _pick_player_file(player: str, current_path: str = "") -> str:
     except Exception as exc:  # noqa: BLE001
         raise RuntimeError(f"当前环境无法打开文件选择器: {exc}") from exc
 
-    player_name = "VLC" if str(player or "").strip().lower() == "vlc" else "PotPlayer"
+    player_name = "mpv"
     initial_path = str(current_path or "").strip()
     initial_dir = ""
     initial_file = ""
@@ -371,7 +368,7 @@ def get_local_directories(path: str = Query(default="")) -> list[dict[str, str]]
 @app.post("/api/system/pick-player")
 def pick_player_file(payload: PlayerPathPickPayload) -> dict[str, str]:
     try:
-        return {"path": _pick_player_file(payload.player, payload.current_path)}
+        return {"path": _pick_player_file("mpv", payload.current_path)}
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -449,27 +446,6 @@ def scrape_library(source: str = Query(default="remote")) -> dict[str, str]:
     return {"job_id": job.job_id}
 
 
-@app.get("/api/recommendations")
-def get_recommendations(
-    limit: int = Query(default=18, ge=1, le=48),
-    external_limit: int = Query(default=8, ge=0, le=24),
-) -> dict[str, Any]:
-    return recommendation_service.get_dashboard(limit=limit, external_limit=external_limit)
-
-
-@app.post("/api/recommendations/refresh")
-def refresh_recommendations() -> dict[str, Any]:
-    return recommendation_service.refresh()
-
-
-@app.post("/api/recommendations/rate")
-def rate_recommendation_movie(payload: RecommendationRatingPayload) -> dict[str, Any]:
-    try:
-        return recommendation_service.rate_movie(payload.movie_path, payload.rating)
-    except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-
-
 @app.get("/api/report")
 def get_report() -> dict[str, Any]:
     return report_service.get_report()
@@ -524,32 +500,32 @@ def play_movie(payload: PlayPayload) -> dict[str, Any]:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-@app.post("/api/vlc/session/start")
-def start_vlc_controlled_session(payload: PlayPayload) -> dict[str, Any]:
+@app.post("/api/mpv/session/start")
+def start_mpv_controlled_session(payload: PlayPayload) -> dict[str, Any]:
     try:
-        result = playback_service.start_vlc_controlled_playback(payload.movie_path, payload.episode_index)
+        result = playback_service.start_mpv_controlled_playback(payload.movie_path, payload.episode_index)
         return {"success": True, "result": result, "stats": library_service.get_stats()}
     except (ValueError, FileNotFoundError, RuntimeError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-@app.get("/api/vlc/session")
-def get_vlc_controlled_session() -> dict[str, Any]:
-    return {"success": True, "result": playback_service.get_vlc_controlled_session()}
+@app.get("/api/mpv/session")
+def get_mpv_controlled_session() -> dict[str, Any]:
+    return {"success": True, "result": playback_service.get_mpv_controlled_session()}
 
 
-@app.post("/api/vlc/session/command")
-def control_vlc_controlled_session(payload: VLCControlPayload) -> dict[str, Any]:
+@app.post("/api/mpv/session/command")
+def control_mpv_controlled_session(payload: SessionControlPayload) -> dict[str, Any]:
     try:
-        result = playback_service.control_vlc_controlled_session(payload.action, payload.value)
+        result = playback_service.control_mpv_controlled_session(payload.action, payload.value)
         return {"success": True, "result": result}
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-@app.delete("/api/vlc/session")
-def stop_vlc_controlled_session() -> dict[str, Any]:
-    return playback_service.stop_vlc_controlled_session()
+@app.delete("/api/mpv/session")
+def stop_mpv_controlled_session() -> dict[str, Any]:
+    return playback_service.stop_mpv_controlled_session()
 
 
 @app.get("/api/stream/playlist.m3u8")
@@ -713,9 +689,10 @@ def save_playback_progress(
     movie_path: str,
     progress: float = Body(..., embed=True),
     duration: float = Body(..., embed=True),
+    episode_index: int | None = Body(default=None, embed=True),
 ) -> dict[str, Any]:
     try:
-        return library_service.save_playback_progress(movie_path, progress, duration)
+        return library_service.save_playback_progress(movie_path, progress, duration, episode_index=episode_index)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
@@ -734,6 +711,13 @@ def clear_playback_progress(movie_path: str) -> dict[str, Any]:
         return library_service.clear_playback_progress(movie_path)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.get("/api/movies/all-progress")
+def get_all_playback_progress() -> dict[str, Any]:
+    """获取所有视频的播放进度"""
+    all_progress = library_service.get_all_playback_progress()
+    return {"success": True, "progress": all_progress}
 
 
 # ---- OpenList 管理接口 ----
@@ -850,3 +834,60 @@ def disable_openlist_storage(storage_id: int = Query(...)) -> dict[str, Any]:
         return openlist_service.disable_storage(storage_id)
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+# ---- 观影行为分析 API ----
+
+@app.post("/api/behavior/watch")
+def report_watch_behavior(
+    media_id: str = Body(...),
+    duration: int = Body(...),
+    progress: float = Body(None),
+    media_type: str = Body(None),
+    genres: List[str] = Body(None)
+) -> dict[str, Any]:
+    """上报观看行为数据"""
+    behavior_analytics_service.record_watch_behavior(media_id, duration, progress, media_type, genres)
+    return {"success": True, "message": "行为数据已记录"}
+
+
+@app.get("/api/analytics/user-profile")
+def get_user_profile() -> dict[str, Any]:
+    """获取用户观影画像"""
+    return behavior_analytics_service.analyze_user_profile()
+
+
+@app.get("/api/analytics/watch-duration-trend")
+def get_watch_duration_trend(days: int = Query(default=30, ge=7, le=90)) -> dict[str, Any]:
+    """获取观影时长趋势（按日期分组）"""
+    return {"data": behavior_analytics_service.analyze_watch_duration_trend(days)}
+
+
+@app.get("/api/analytics/genre-preference")
+def get_genre_preference() -> dict[str, Any]:
+    """获取类型偏好分布"""
+    return {"data": behavior_analytics_service.analyze_genre_preference()}
+
+
+@app.get("/api/analytics/time-distribution")
+def get_time_distribution() -> dict[str, Any]:
+    """获取观看时段分布（按小时）"""
+    return {"data": behavior_analytics_service.analyze_watch_time_distribution()}
+
+
+@app.get("/api/analytics/completion-rate")
+def get_completion_rate() -> dict[str, Any]:
+    """获取完播率分析"""
+    return behavior_analytics_service.analyze_completion_rate()
+
+
+@app.get("/api/analytics/full-report")
+def get_full_analytics_report() -> dict[str, Any]:
+    """获取完整的行为分析报告"""
+    return behavior_analytics_service.generate_full_report()
+
+
+@app.get("/api/analytics/has-data")
+def check_has_behavior_data() -> dict[str, Any]:
+    """检查是否有足够的行为数据"""
+    return {"has_data": behavior_analytics_service.has_valid_behavior_data()}

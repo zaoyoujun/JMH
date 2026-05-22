@@ -19,17 +19,17 @@ class LocalVideoLibraryManager:
 
     def get_video_list(self, force_refresh=False):
         if not force_refresh and LocalVideoLibraryManager._cached_list is not None:
-            logger.info("使用本地媒体库内存缓存")
+            logger.debug("使用本地媒体库内存缓存")
             return LocalVideoLibraryManager._cached_list
 
         if not force_refresh and self._has_valid_cache():
-            logger.info("读取本地媒体库缓存")
+            logger.debug("读取本地媒体库缓存")
             LocalVideoLibraryManager._cached_list = self._load_cache()
             return LocalVideoLibraryManager._cached_list
 
         video_files = self._scan_local_dirs()
         if not video_files:
-            logger.warning("本地目录扫描为空")
+            logger.debug("本地目录扫描为空")
             if self._has_valid_cache():
                 return self._load_cache()
             return []

@@ -36,23 +36,20 @@ class AppConfig:
         self.LOCAL_SCAN_MAX_DEPTH = 3
         self.UI_THEME = "amber"
 
-        self.POTPLAYER_PATH = ""
-        self.DEFAULT_POTPLAYER_PATHS = [
-            r"C:\Program Files\DAUM\PotPlayer\PotPlayer.exe",
-            r"C:\Program Files (x86)\DAUM\PotPlayer\PotPlayer.exe",
+        self.MPV_PATH = ""
+        self.DEFAULT_MPV_PATHS = [
+            r"C:\Program Files\mpv\mpv.exe",
+            r"C:\Program Files (x86)\mpv\mpv.exe",
+            r"C:\tools\mpv\mpv.exe",
+            str(self.BASE_DIR.parent / "vendor" / "mpv-win64" / "mpv-x86_64-20260421-git-5921fe5" / "mpv.exe"),
         ]
-
-        self.VLC_PATH = ""
-        self.DEFAULT_VLC_PATHS = [
-            r"C:\Program Files\VideoLAN\VLC\vlc.exe",
-            r"C:\Program Files (x86)\VideoLAN\VLC\vlc.exe",
-        ]
-        self.DEFAULT_PLAYER = "potplayer"
+        self.DEFAULT_PLAYER = "mpv_desktop"
 
         self.VIDEO_FORMATS = [".mp4", ".mkv", ".avi", ".mov", ".wmv", ".flv", ".rmvb", ".ts"]
         self.ENABLE_AUTO_SCRAPE = True
         self.SCRAPE_SOURCE = "auto"
         self.TMDB_API_KEY = ""
+        self.DOUBAN_COOKIE = ""
         self.TMDB_API_BASE = "https://api.themoviedb.org/3"
         self.TMDB_WEB_BASE = "https://www.themoviedb.org"
         self.TMDB_IMAGE_BASE = "https://image.tmdb.org/t/p/w500"
@@ -60,7 +57,7 @@ class AppConfig:
         self.INTERFACE_LANGUAGE = "zh"
 
         self.SERVER_PORT = 8765
-        self.NGINX_PORT = 80
+        self.NGINX_PORT = 8080
 
         self.OPENLIST_ENABLED = False
         self.OPENLIST_PORT = 5244
@@ -99,8 +96,7 @@ class AppConfig:
             "saved_mount_dirs": "|".join([item.strip() for item in self.LOCAL_MOUNT_DIRS if item.strip()]),
         }
         config["player"] = {
-            "potplayer_path": self.POTPLAYER_PATH.strip(),
-            "vlc_path": self.VLC_PATH.strip(),
+            "mpv_path": self.MPV_PATH.strip(),
             "default_player": self.DEFAULT_PLAYER.strip(),
         }
         config["server"] = {
@@ -112,6 +108,7 @@ class AppConfig:
             "enable_auto_scrape": self.ENABLE_AUTO_SCRAPE,
             "scrape_source": self.SCRAPE_SOURCE.strip(),
             "tmdb_api_key": self.TMDB_API_KEY.strip(),
+            "douban_cookie": base64.b64encode(self.DOUBAN_COOKIE.encode()).decode() if self.DOUBAN_COOKIE else "",
             "tmdb_api_base": self.TMDB_API_BASE.strip(),
             "tmdb_web_base": self.TMDB_WEB_BASE.strip(),
             "tmdb_image_base": self.TMDB_IMAGE_BASE.strip(),
@@ -180,9 +177,8 @@ class AppConfig:
                 self.LOCAL_MOUNT_DIRS = self._parse_saved_dirs(local_config.get("saved_mount_dirs", ""))
 
             if "player" in config:
-                self.POTPLAYER_PATH = config["player"].get("potplayer_path", "").strip()
-                self.VLC_PATH = config["player"].get("vlc_path", "").strip()
-                self.DEFAULT_PLAYER = config["player"].get("default_player", "potplayer").strip().lower()
+                self.MPV_PATH = config["player"].get("mpv_path", "").strip()
+                self.DEFAULT_PLAYER = config["player"].get("default_player", "mpv_desktop").strip().lower()
 
             if "general" in config:
                 general_config = config["general"]
@@ -191,6 +187,8 @@ class AppConfig:
                 self.ENABLE_AUTO_SCRAPE = general_config.getboolean("enable_auto_scrape", True)
                 self.SCRAPE_SOURCE = "auto"
                 self.TMDB_API_KEY = general_config.get("tmdb_api_key", "").strip()
+                douban_cookie_b64 = general_config.get("douban_cookie", "")
+                self.DOUBAN_COOKIE = base64.b64decode(douban_cookie_b64).decode() if douban_cookie_b64 else ""
                 self.TMDB_API_BASE = general_config.get("tmdb_api_base", "https://api.themoviedb.org/3").strip() or "https://api.themoviedb.org/3"
                 self.TMDB_WEB_BASE = general_config.get("tmdb_web_base", "https://www.themoviedb.org").strip() or "https://www.themoviedb.org"
                 self.TMDB_IMAGE_BASE = general_config.get("tmdb_image_base", "https://image.tmdb.org/t/p/w500").strip() or "https://image.tmdb.org/t/p/w500"
@@ -219,10 +217,7 @@ class AppConfig:
                 self.CLICKHOUSE_DATABASE = analytics_config.get("clickhouse_database", self.CLICKHOUSE_DATABASE).strip() or "moviepop"
 
             self._auto_detect_players()
-            if self.DEFAULT_PLAYER == "builtin":
-                self.DEFAULT_PLAYER = "vlc_controlled"
-            if self.DEFAULT_PLAYER not in {"vlc_controlled", "libvlc_desktop", "potplayer", "vlc"}:
-                self.DEFAULT_PLAYER = "potplayer"
+            self.DEFAULT_PLAYER = "mpv_desktop"
             self.SCRAPE_SOURCE = "auto"
             self.UI_THEME = self.normalize_theme(self.UI_THEME)
             self.INTERFACE_THEME = self.UI_THEME
@@ -243,23 +238,14 @@ class AppConfig:
         return [item.strip() for item in raw_value.split(",") if item.strip()]
 
     def _auto_detect_players(self):
-        self._auto_detect_potplayer()
-        self._auto_detect_vlc()
+        self._auto_detect_mpv()
 
-    def _auto_detect_potplayer(self):
-        if self.POTPLAYER_PATH and os.path.exists(self.POTPLAYER_PATH):
+    def _auto_detect_mpv(self):
+        if self.MPV_PATH and os.path.exists(self.MPV_PATH):
             return
-        for path in self.DEFAULT_POTPLAYER_PATHS:
+        for path in self.DEFAULT_MPV_PATHS:
             if os.path.exists(path):
-                self.POTPLAYER_PATH = path
-                return
-
-    def _auto_detect_vlc(self):
-        if self.VLC_PATH and os.path.exists(self.VLC_PATH):
-            return
-        for path in self.DEFAULT_VLC_PATHS:
-            if os.path.exists(path):
-                self.VLC_PATH = path
+                self.MPV_PATH = path
                 return
 
     def normalize_theme(self, theme: str):

@@ -221,7 +221,7 @@ class OpenListManager:
                     self._active_port = port
                     self._stop_event.clear()
                     self._start_health_thread()
-                    logger.info("OpenList 启动成功，端口: %d, PID: %d", port, self._process.pid)
+                    logger.info("[启动] OpenList 启动成功 | 端口: %d | 进程 PID: %d", port, self._process.pid)
                     return {"success": True, "message": "OpenList 启动成功", "status": self._status, "port": port}
                 else:
                     self._status = self.STATUS_ERROR

@@ -7,7 +7,7 @@ from core.remote_source import (
     make_remote_client,
     make_remote_provider_config,
 )
-from utils.filename_parser import merge_series_videos, parse_video_filename
+from utils.filename_parser import merge_series_videos
 from utils.logger import get_logger
 
 logger = get_logger()
@@ -24,11 +24,11 @@ class VideoLibraryManager:
 
     def get_video_list(self, force_refresh=False):
         if not force_refresh and VideoLibraryManager._cached_list is not None:
-            logger.debug("使用远程媒体库内存缓存")
+            logger.info("使用远程媒体库内存缓存")
             return VideoLibraryManager._cached_list
 
         if not force_refresh and self._has_valid_cache():
-            logger.debug("读取远程媒体库缓存")
+            logger.info("读取远程媒体库缓存")
             VideoLibraryManager._cached_list = self._load_cache()
             return VideoLibraryManager._cached_list
 
@@ -36,7 +36,7 @@ class VideoLibraryManager:
         if not force_refresh:
             return []
 
-        logger.info("[扫描] 开始扫描远程媒体源")
+        logger.info("开始扫描远程媒体源...")
         try:
             video_files = self._scan_remote_sources()
             if not video_files:
@@ -48,7 +48,7 @@ class VideoLibraryManager:
             movie_list = merge_series_videos(video_files)
             self._save_cache(movie_list)
             VideoLibraryManager._cached_list = movie_list
-            logger.info("[统计] 远程媒体源扫描完成 | 识别总数: %s 部", len(movie_list))
+            logger.info("远程媒体源扫描完成: %s", len(movie_list))
             return movie_list
         except Exception as exc:  # noqa: BLE001
             logger.error("远程媒体源扫描异常: %s", exc)
@@ -115,33 +115,10 @@ class VideoLibraryManager:
                 cache_item = dict(item)
                 cache_item["remote_provider"] = provider
                 cache_item["source_label"] = cache_item.get("source_label") or get_remote_provider_label(provider)
-                cache_item = self._rehydrate_cached_fields(cache_item)
                 normalized.append(cache_item)
             return normalized
         except Exception:  # noqa: BLE001
             return []
-
-    def _rehydrate_cached_fields(self, movie: dict):
-        path = str(movie.get("path") or "").strip()
-        if not path:
-            return movie
-        parsed = parse_video_filename(path)
-        for key in (
-            "category",
-            "media_type",
-            "franchise",
-            "sort_bucket",
-            "sort_title",
-            "release_group",
-            "resolution",
-            "codec",
-            "subtitle_info",
-            "audio_info",
-            "year_hint",
-        ):
-            if not movie.get(key) and parsed.get(key) not in (None, ""):
-                movie[key] = parsed.get(key)
-        return movie
 
     def _save_cache(self, movie_list):
         try:
@@ -168,17 +145,6 @@ class VideoLibraryManager:
                         "season",
                         "remote_provider",
                         "source_label",
-                        "category",
-                        "media_type",
-                        "franchise",
-                        "sort_bucket",
-                        "sort_title",
-                        "release_group",
-                        "resolution",
-                        "codec",
-                        "subtitle_info",
-                        "audio_info",
-                        "year_hint",
                     ]
                 }
                 cache_data.append(cache_item)

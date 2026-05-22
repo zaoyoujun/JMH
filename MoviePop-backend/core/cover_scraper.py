@@ -2,6 +2,7 @@ import hashlib
 import os
 import re
 import time
+from http.cookies import SimpleCookie
 from urllib.parse import quote, urljoin
 
 import requests
@@ -103,6 +104,36 @@ class CoverScraper:
         self._tmdb_disabled_until = 0
         self._tmdb_failure_reason = ""
 
+    def _build_douban_headers(self):
+        headers = HEADERS.copy()
+        headers["Referer"] = DOUBAN_BASE
+        headers["Origin"] = DOUBAN_BASE
+        headers["Sec-Fetch-Dest"] = "document"
+        headers["Sec-Fetch-Mode"] = "navigate"
+        headers["Sec-Fetch-Site"] = "same-site"
+        headers["Upgrade-Insecure-Requests"] = "1"
+        cookie = str(getattr(self.config, "DOUBAN_COOKIE", "") or "").strip()
+        if cookie:
+            headers["Cookie"] = cookie
+        return headers
+
+    def _apply_douban_cookie(self, session, cookie_value):
+        raw_cookie = str(cookie_value or "").strip()
+        if not raw_cookie:
+            return
+        try:
+            parsed = SimpleCookie()
+            parsed.load(raw_cookie)
+            for morsel in parsed.values():
+                session.cookies.set(
+                    morsel.key,
+                    morsel.value,
+                    domain=".douban.com",
+                    path=morsel["path"] or "/",
+                )
+        except Exception as exc:
+            logger.warning(f"豆瓣 Cookie 解析失败: {exc}")
+
     def _tmdb_is_temporarily_disabled(self):
         return time.time() < float(self._tmdb_disabled_until or 0)
 
@@ -160,11 +191,14 @@ class CoverScraper:
                 if digest.startswith(prefix):
                     break
 
-            challenge_headers = {
-                "User-Agent": HEADERS["User-Agent"],
+            challenge_headers = dict(session.headers)
+            challenge_headers.update({
                 "Referer": response.url,
                 "Origin": "https://sec.douban.com",
-            }
+                "Sec-Fetch-Dest": "document",
+                "Sec-Fetch-Mode": "navigate",
+                "Sec-Fetch-Site": "same-origin",
+            })
             challenge_url = urljoin(response.url, form.get("action") or "/c")
             challenge_response = session.post(
                 challenge_url,
@@ -180,13 +214,23 @@ class CoverScraper:
 
     def _douban_get(self, url):
         session = requests.Session()
-        headers = HEADERS.copy()
-        headers["Referer"] = DOUBAN_BASE
-        response = session.get(url, headers=headers, timeout=15, allow_redirects=True)
+        headers = self._build_douban_headers()
+        if "/j/subject_suggest" in str(url):
+            headers["Accept"] = "application/json, text/javascript, */*; q=0.01"
+            headers["X-Requested-With"] = "XMLHttpRequest"
+            headers["Sec-Fetch-Dest"] = "empty"
+            headers["Sec-Fetch-Mode"] = "cors"
+            headers["Sec-Fetch-Site"] = "same-origin"
+            headers["Referer"] = f"{DOUBAN_BASE}/"
+        session.headers.update(headers)
+        cookie = str(getattr(self.config, "DOUBAN_COOKIE", "") or "").strip()
+        self._apply_douban_cookie(session, cookie)
+        response = session.get(url, timeout=15, allow_redirects=True)
         if "sec.douban.com" in response.url or 'id="sec"' in response.text:
+            logger.warning("豆瓣请求命中风控校验: %s", response.url)
             solved = self._solve_douban_challenge(session, response)
             if solved:
-                response = session.get(url, headers=headers, timeout=15, allow_redirects=True)
+                response = session.get(url, timeout=15, allow_redirects=True)
         return session, response
 
     def _get_douban_detail_soup(self, detail_url):
@@ -319,7 +363,7 @@ class CoverScraper:
             logger.info(f"使用本地封面: {name}")
             return local_cover_path, None, None
 
-        logger.info(f"[scrape] target={name} season=S{target_season} kind={'movie' if is_movie else 'series'}")
+        logger.info("[刮削详情] 目标: %s | 季数: %s | 类型: %s", name, target_season, 'movie' if is_movie else 'series')
         parsed = clean_title_for_search(movie_data.get("title", ""))
         clean_base = parsed["clean_name"] or name
         year = movie_data.get("year", "")
@@ -346,7 +390,7 @@ class CoverScraper:
                 scraped_year = new_year
             if new_cover or new_intro or new_year:
                 logger.info(
-                    "[scrape] selected candidate source=%s title=%s",
+                    "匹配成功 | 来源: %s | 标题: %s",
                     candidate_source,
                     candidate.get("title", ""),
                 )
@@ -905,7 +949,7 @@ class CoverScraper:
             with open(save_path, "wb") as f:
                 for chunk in res.iter_content(chunk_size=1024 * 8):
                     f.write(chunk)
-            logger.info(f"[success] cover downloaded: {name}")
+            logger.info(f"封面下载成功: {name}")
             return save_path
         except Exception as e:
             logger.error(f"[error] cover download failed {name}: {e}")
@@ -918,24 +962,31 @@ class CoverScraper:
         candidates = []
         diagnostics = []
         seen = set()
-        logger.info(f"[candidate-search] start: {name}")
+        logger.info(f"开始匹配候选: {name}")
         is_series = movie_data.get("is_series", False)
         is_anime = self._is_anime_content(movie_data)
+        
+        # 检查是否有豆瓣 cookie
+        has_douban_cookie = bool((getattr(self.config, "DOUBAN_COOKIE", "") or "").strip())
+        
         if is_anime:
             source_fetchers = [
                 ("AniBK", lambda q: self._fetch_anibk_list(q)),
-                ("Bangumi", lambda q: self._fetch_bangumi_list(q)),
-                ("Douban", lambda q: self._fetch_douban_list(q)),
-                ("TMDB", lambda q: self._fetch_tmdb_list(q, is_series=is_series)),
-                ("IMDb", lambda q: self._fetch_imdb_list(q)),
             ]
+            # 如果有豆瓣 cookie，添加豆瓣作为备选
+            if has_douban_cookie:
+                source_fetchers.append(("Douban", lambda q: self._fetch_douban_list(q)))
+            # TMDB 作为最后备选
+            source_fetchers.append(("TMDB", lambda q: self._fetch_tmdb_list(q, is_series=is_series)))
         else:
-            source_fetchers = [
-                ("Douban", lambda q: self._fetch_douban_list(q)),
-                ("TMDB", lambda q: self._fetch_tmdb_list(q, is_series=is_series)),
-                ("IMDb", lambda q: self._fetch_imdb_list(q)),
-                ("AniBK", lambda q: self._fetch_anibk_list(q)),
-            ]
+            source_fetchers = []
+            # 如果有豆瓣 cookie，优先使用豆瓣
+            if has_douban_cookie:
+                source_fetchers.append(("Douban", lambda q: self._fetch_douban_list(q)))
+            # TMDB 作为主要源
+            source_fetchers.append(("TMDB", lambda q: self._fetch_tmdb_list(q, is_series=is_series)))
+            # AniBK 作为最后备选
+            source_fetchers.append(("AniBK", lambda q: self._fetch_anibk_list(q)))
 
         for source_name, fetcher in source_fetchers:
             if source_name == "TMDB" and self._tmdb_is_temporarily_disabled():
@@ -1069,6 +1120,9 @@ class CoverScraper:
     def _build_base_queries(self, movie_data, custom_name):
         title = str(movie_data.get("title", "") or "")
         name = str(movie_data.get("name", "") or "")
+        series_title = str(movie_data.get("series_title", "") or "")
+        season_title = str(movie_data.get("season_title", "") or "")
+        special_type = str(movie_data.get("special_type", "") or "")
         year = movie_data.get("year", "")
         season = int(movie_data.get("season") or 0)
         parsed = clean_title_for_search(title)
@@ -1076,7 +1130,7 @@ class CoverScraper:
         seasonless_base = self._strip_season_tokens(clean_base)
         queries = []
 
-        for value in (custom_name, title, name, clean_base, seasonless_base):
+        for value in (custom_name, title, name, series_title, clean_base, seasonless_base):
             normalized = str(value or "").strip()
             if normalized:
                 queries.append(normalized)
@@ -1090,6 +1144,15 @@ class CoverScraper:
                     f"{seasonless_base} S{season:02d}",
                 ]
             )
+        if season_title and seasonless_base:
+            queries.extend(
+                [
+                    f"{seasonless_base} {season_title}",
+                    season_title if len(season_title) > 1 else "",
+                ]
+            )
+        if special_type and seasonless_base:
+            queries.append(f"{seasonless_base} {special_type}")
         if year:
             base_for_year = seasonless_base or clean_base
             if base_for_year:

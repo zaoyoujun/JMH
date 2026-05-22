@@ -304,7 +304,7 @@ class VideoCache:
         all_tags = self.get_all_tags()
         return all_tags.get(tag, [])
 
-    def save_playback_progress(self, movie_path, progress, duration):
+    def save_playback_progress(self, movie_path, progress, duration, episode_index=None):
         """
         保存视频播放进度
         :param movie_path: 电影路径
@@ -316,6 +316,7 @@ class VideoCache:
             playback_data[movie_path] = {
                 "progress": progress,
                 "duration": duration,
+                "episode_index": int(episode_index or 0),
                 "timestamp": self._get_timestamp()
             }
             with open(self.playback_file, "w", encoding="utf-8") as f:

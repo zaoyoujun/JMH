@@ -18,6 +18,9 @@ def is_port_free(port: int) -> bool:
 NGINX_CONF_TEMPLATE = """\
 worker_processes  1;
 
+error_log   "{log_dir}/nginx_error.log";
+pid         "{log_dir}/nginx.pid";
+
 events {{
     worker_connections  1024;
 }}
@@ -83,8 +86,11 @@ def generate_nginx_conf(api_port: int, nginx_port: int = 80) -> Path:
     log_dir = (project_root / "logs").as_posix()
     conf_path = project_root / "nginx.conf"
 
-    # 确保 logs 目录存在
     (project_root / "logs").mkdir(exist_ok=True)
+    temp_dir = project_root / "temp"
+    temp_dir.mkdir(exist_ok=True)
+    for sub in ("client_body_temp", "proxy_temp", "fastcgi_temp", "uwsgi_temp", "scgi_temp"):
+        (temp_dir / sub).mkdir(exist_ok=True)
 
     content = NGINX_CONF_TEMPLATE.format(
         nginx_dir=nginx_dir,
@@ -125,13 +131,13 @@ def start_nginx(conf_path: Path) -> bool:
     if not nginx_exe:
         print("错误: 未找到 nginx，请确保 nginx-1.30.0 目录存在或 nginx 已安装并在 PATH 中")
         return False
+    project_root = Path(__file__).resolve().parent.parent
     try:
-        # 先停止已有的 nginx 实例
         stop_existing_nginx()
         time.sleep(1)
 
         result = subprocess.run(
-            [nginx_exe, "-t", "-c", str(conf_path)],
+            [nginx_exe, "-p", str(project_root), "-t", "-c", str(conf_path)],
             capture_output=True, text=True, timeout=10,
         )
         if result.returncode != 0:
@@ -139,7 +145,7 @@ def start_nginx(conf_path: Path) -> bool:
             return False
 
         subprocess.Popen(
-            [nginx_exe, "-c", str(conf_path)],
+            [nginx_exe, "-p", str(project_root), "-c", str(conf_path)],
             creationflags=subprocess.CREATE_NEW_CONSOLE,
         )
         print("nginx 已启动")

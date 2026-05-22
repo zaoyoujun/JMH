@@ -222,12 +222,21 @@ class OpenListAdminClient:
     def get_supported_drivers() -> list[dict[str, Any]]:
         return SUPPORTED_DRIVERS
 
-    def list_files(self, password: str, path: str = "/", page: int = 1, per_page: int = 0) -> dict[str, Any]:
+    def list_files(
+        self,
+        password: str,
+        path: str = "/",
+        page: int = 1,
+        per_page: int = 0,
+        refresh: bool = False,
+    ) -> dict[str, Any]:
         """列目录，返回当前层级的子项（OpenList /api/fs/list）"""
+        import urllib.parse
+        encoded_path = urllib.parse.quote(path, safe='/')
         resp = self.session.post(
             f"{self.base_url}/api/fs/list",
             headers=self._auth_headers(password),
-            json={"path": path, "password": "", "page": page, "per_page": per_page, "refresh": False},
+            json={"path": encoded_path, "password": "", "page": page, "per_page": per_page, "refresh": bool(refresh)},
             timeout=15,
         )
         return self._check_response(resp)

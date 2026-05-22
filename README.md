@@ -58,7 +58,7 @@ JMH-split/
 │   └── run_backend.py       # 后端启动入口（含 Nginx 反向代理）
 ├── API.md                   # API 接口文档
 ├── README.md                # 项目说明
-└── start_nginx.bat          # Windows 启动脚本
+└── quick_start_desktop.bat   # Windows 启动脚本
 ```
 
 ## 快速开始
@@ -83,7 +83,7 @@ pip install -r requirements.txt
 python run_backend.py
 ```
 
-或直接双击根目录的 `start_nginx.bat`。
+或直接双击根目录的 `quick_start_desktop.bat`。
 
 启动后浏览器自动打开 `http://localhost:8088`（Nginx 代理端口，可在 config.ini 中修改 `nginx_port`）。
 
@@ -111,3 +111,25 @@ python run_backend.py
 如需独立部署，将前端挂到 Nginx，`/api` 和 `/covers` 反向代理到后端 API 端口。
 
 可选启用 ClickHouse 数据仓库，用于 OLAP 多维分析。
+
+## 项目状态
+
+- 开发状态：活跃维护中
+- 版本：v2.0（拆分重构版本）
+
+## 更新日志
+
+### v2.0（拆分重构）
+- 项目拆分为前后端分离结构
+- 后端重构为模块化架构（backend/config/core/utils）
+- 前端保持原生 HTML/CSS/JS 实现
+- 新增 OpenList 增量同步支持
+- 优化推荐算法性能
+
+## 许可证
+
+MIT License
+
+## 贡献
+
+欢迎提交 Issue 和 Pull Request！

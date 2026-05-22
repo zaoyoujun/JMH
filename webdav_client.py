@@ -184,7 +184,7 @@ class WebDAVClient:
                     response = self._propfind(current_path, depth=1)
                     entries = self._parse_entries(response.text, current_path)
                 except Exception as exc:  # noqa: BLE001
-                    logger.warning("目录不存在或无法访问: %s", current_path)
+                    logger.error("Scan directory failed for %s: %s", current_path, exc)
                     continue
 
                 for item in entries:
@@ -198,7 +198,7 @@ class WebDAVClient:
                     if ext in self.config.VIDEO_FORMATS:
                         videos.append(full_path)
 
-            logger.info("[完成] 远程扫描完成 | 视频文件总数: %s 个", len(videos))
+            logger.info("Remote scan complete, found %s video files", len(videos))
             return videos
         except Exception as exc:  # noqa: BLE001
             logger.error("Remote scan failed: %s", exc)
