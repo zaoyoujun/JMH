@@ -20,15 +20,26 @@ EPISODE_PATTERNS = [
     re.compile(r"[\[\s](?P<episode>\d{1,3})(?:v\d)?[\]\s]", re.IGNORECASE),
 ]
 SEASON_PATTERNS = [
-    re.compile(r"第\s*(?P<season>[0-9一二三四五六七八九十两壹贰叁肆伍陆柒捌玖拾ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩIVX]+)\s*季", re.IGNORECASE),
-    re.compile(r"Season\s*(?P<season>[0-9IVX]+)", re.IGNORECASE),
+    re.compile(r"\b第\s*(?P<season>[0-9一二三四五六七八九十两壹贰叁肆伍陆柒捌玖拾]+)\s*季\b", re.IGNORECASE),
+    re.compile(r"\bSeason\s*(?P<season>\d{1,2})\b", re.IGNORECASE),
+    # 支持文件名中的 S01E01 格式
+    re.compile(r"(?:^|[._])S(?P<season>\d{1,2})E\d{1,3}(?:$|[._])", re.IGNORECASE),
+    # 支持单独的 S01, S1 格式
+    re.compile(r"(?:^|[._\s])S\s*(?P<season>\d{1,2})(?:$|[._\s]|E)", re.IGNORECASE),
     re.compile(r"\bS\s*(?P<season>\d{1,2})\b", re.IGNORECASE),
     re.compile(r"\bS(?P<season>\d{1,2})\b", re.IGNORECASE),
     re.compile(r"第\s*(?P<season>[0-9一二三四五六七八九十两壹贰叁肆伍陆柒捌玖拾]+)\s*(?:部|期|章)", re.IGNORECASE),
+    # 支持带括号的季数，如 (第一季), (第三季上), (第四季#1)
+    re.compile(r"\(\s*第\s*(?P<season>[0-9一二三四五六七八九十两壹贰叁肆伍陆柒捌玖拾]+)\s*季[^)]*\)", re.IGNORECASE),
+    # 支持罗马数字季数
+    re.compile(r"\b(?P<season>Ⅰ|Ⅱ|Ⅲ|Ⅳ|Ⅴ|Ⅵ|Ⅶ|Ⅷ|Ⅸ|Ⅹ|XI|XII|XIII|XIV|XV)\b", re.IGNORECASE),
 ]
 PART_PATTERNS = [
-    re.compile(r"\bPart\s*(?P<part>\d{1,2}|[IVX]+)\b", re.IGNORECASE),
+    re.compile(r"#\s*(?P<part>\d{1,2})\b", re.IGNORECASE),  # 支持 #1, #2 格式 - 优先匹配
+    re.compile(r"\bPart[\s.]*(?P<part>\d{1,2}|[IVX]+)\b", re.IGNORECASE),  # 支持 Part.2, Part 2 格式
     re.compile(r"第\s*(?P<part>[0-9一二三四五六七八九十两壹贰叁肆伍陆柒捌玖拾]+)\s*部分", re.IGNORECASE),
+    # 支持上下篇，使用命名捕获组
+    re.compile(r"(?P<part>上|下|前篇|后篇|中篇)\b", re.IGNORECASE),
 ]
 SPECIAL_TYPE_PATTERNS = {
     "OVA": re.compile(r"\b(?:OVA|OAD|OAV)\b", re.IGNORECASE),
@@ -36,6 +47,10 @@ SPECIAL_TYPE_PATTERNS = {
     "剧场版": re.compile(r"剧场版", re.IGNORECASE),
     "外传": re.compile(r"外传", re.IGNORECASE),
     "前传": re.compile(r"前传", re.IGNORECASE),
+    "短篇": re.compile(r"短篇", re.IGNORECASE),
+    "总集篇": re.compile(r"总集篇", re.IGNORECASE),
+    "回顾": re.compile(r"回顾", re.IGNORECASE),
+    "龙水篇": re.compile(r"龙水篇", re.IGNORECASE),  # 针对特定命名
 }
 SEASON_ALIAS_KEYWORDS = {
     "最终季": 4,
@@ -47,6 +62,8 @@ SEASON_ALIAS_KEYWORDS = {
     "三期": 3,
     "四期": 4,
     "新系列": 3,
+    "新篇章": 2,
+    "新篇章": 2,
 }
 MEDIA_CATEGORY_MAP = {
     "动漫": "动漫",
@@ -281,11 +298,80 @@ def _detect_season(*parts: str) -> tuple[int | None, str]:
             if match:
                 season = _parse_number(match.group("season"))
                 if season:
+                    # 提取季标题信息
+                    # 先提取主要副标题（如 NEW WORLD, Stone Wars）
+                    main_title = ""
+                    if "NEW WORLD" in text:
+                        main_title = "NEW WORLD"
+                    elif "Stone Wars" in text:
+                        main_title = "Stone Wars"
+                    elif "科学与未来" in text:
+                        main_title = "科学与未来"
+                    
+                    # 提取部分编号（如 #1, #2）
+                    # 注意：Part.N 格式可能出现在季标题中（如 Part.2），应该作为 part 编号而不是标题
+                    part_suffix = ""
+                    part_match = re.search(r"(#\s*\d+)\b", text)
+                    if part_match:
+                        part_suffix = part_match.group(1).strip()
+                    
+                    # 尝试从括号中提取季标题，如 (第三季上) -> "上"
+                    bracket_match = re.search(r"\(\s*第\s*[0-9一二三四五六七八九十]+季\s*([^)]+)\)", text)
+                    if bracket_match:
+                        bracket_title = bracket_match.group(1).strip()
+                        # 如果括号标题只是方向（上/下），则与主标题合并
+                        if bracket_title in {"上", "下", "前篇", "后篇", "中篇"}:
+                            if main_title:
+                                season_title = f"{main_title} {bracket_title}"
+                            else:
+                                season_title = bracket_title
+                        else:
+                            season_title = bracket_title
+                    elif main_title:
+                        season_title = main_title
+                    
+                    # 添加部分编号到季标题
+                    if part_suffix and part_suffix not in season_title:
+                        if season_title:
+                            season_title = f"{season_title} {part_suffix}"
+                        else:
+                            season_title = part_suffix
+                    
                     return season, season_title
         for alias, season in SEASON_ALIAS_KEYWORDS.items():
             if alias.lower() in text.lower():
                 return season, alias
     return None, season_title
+
+
+def _extract_subtitle_from_path(*parts: str) -> tuple[str, int]:
+    """从路径中提取副标题和数字前缀，如 OVA 副标题、特别篇副标题等
+    
+    返回: (subtitle, prefix_number)
+    """
+    prefix_number = 0
+    for part in parts:
+        text = str(part or "")
+        # 提取文件夹名中的数字前缀，如 "2.Re：从零开始的异世界生活 OVA" -> 2
+        prefix_match = re.match(r"^(\d+)\.", text)
+        if prefix_match:
+            prefix_number = int(prefix_match.group(1))
+        
+        # 匹配 OVA/SP/剧场版 后面的副标题
+        # 如 "Re：从零开始的异世界生活 OVA 雪之回忆" -> "雪之回忆"
+        ova_match = re.search(r"\b(OVA|OAD|SP|特别篇|剧场版|外传|前传|短篇|总集篇)\s+(.+?)(?:\s*[-\[\(【#]|$)", text, re.IGNORECASE)
+        if ova_match:
+            subtitle = ova_match.group(2).strip()
+            # 清理副标题中的数字前缀，如 "2.Re：从零开始的异世界生活 OVA" 中的 "2."
+            subtitle = re.sub(r"^[0-9]+\.\s*", "", subtitle)
+            # 清理副标题中的括号内容
+            subtitle = re.sub(r"[\[\(（【].*?[\]\)）】]", "", subtitle).strip()
+            # 清理字幕组信息
+            for group in KNOWN_GROUPS:
+                subtitle = re.sub(rf"\b{re.escape(group)}\b", "", subtitle, flags=re.IGNORECASE)
+            subtitle = " ".join(subtitle.split()).strip()
+            return subtitle, prefix_number
+    return "", prefix_number
 
 
 def _infer_media_category(parts: list[str], season: int | None, special_type: str) -> str:
@@ -324,21 +410,58 @@ def _pick_title_candidate(parts: list[str], filename_stem: str, season: int | No
         parent = cleaned_parts[-1]
         grand_parent = cleaned_parts[-2] if len(cleaned_parts) >= 2 else ""
         if _looks_like_season_folder(parent):
-            # 只提取季标识，不使用完整文件夹名
+            # 提取季标识和副标题
             if special_type:
                 season_label = special_type
             elif season:
-                # 如果已经识别出季数，用标准格式
-                season_label = f"S{int(season):02d}"
+                # 如果已经识别出季数，尝试从文件夹名中提取副标题
+                detected_season, detected_title = _detect_season(parent)
+                # 优先使用检测到的副标题
+                if detected_title and detected_title not in (f"S{int(season):02d}", f"第{season}季"):
+                    season_label = detected_title
+                else:
+                    # 如果没有检测到副标题，尝试从文件夹名中提取
+                    folder_title = _clean_text(parent)
+                    # 移除系列标题（如果 grand_parent 是系列标题）
+                    if grand_parent:
+                        folder_title = folder_title.replace(grand_parent, "").strip()
+                    # 移除季数标识
+                    folder_title = re.sub(r"(?:^|\s)第\s*[0-9一二三四五六七八九十]+\s*季(?:$|\s)", " ", folder_title)
+                    folder_title = re.sub(r"(?:^|\s)S\d{1,2}(?:$|\s)", " ", folder_title)
+                    folder_title = re.sub(r"(?:^|\s)Season\s*\d+(?:$|\s)", " ", folder_title)
+                    folder_title = folder_title.strip()
+                    # 如果提取到了副标题，使用它
+                    if folder_title:
+                        season_label = folder_title
+                    else:
+                        season_label = f"S{int(season):02d}"
             else:
-                # 尝试从文件夹名中提取季数
-                detected_season, _ = _detect_season(parent)
+                # 尝试从文件夹名中提取季数和副标题
+                detected_season, detected_title = _detect_season(parent)
                 if detected_season:
-                    season_label = f"S{int(detected_season):02d}"
+                    # 优先使用检测到的副标题
+                    if detected_title and detected_title not in (f"S{int(detected_season):02d}", f"第{detected_season}季"):
+                        season_label = detected_title
+                    else:
+                        season_label = f"S{int(detected_season):02d}"
                 else:
                     # 如果都没有，保持为空
                     season_label = ""
-            title_candidate = _clean_text(grand_parent) if grand_parent else _clean_text(parent)
+            
+            # 使用 grand_parent 作为标题，如果没有则使用 parent 清理后的版本
+            if grand_parent:
+                title_candidate = _clean_text(grand_parent)
+            else:
+                title_candidate = _clean_text(parent)
+            
+            # 如果标题候选中包含已知的副标题关键词，说明标题提取不正确
+            subtitle_keywords = {"Stone Wars", "NEW WORLD", "科学与未来"}
+            for keyword in subtitle_keywords:
+                if keyword in title_candidate and keyword not in (season_label or ""):
+                    title_candidate = title_candidate.replace(keyword, "").strip()
+                    if not season_label:
+                        season_label = keyword
+            
             if title_candidate:
                 return title_candidate, season_label
     for candidate in reversed(cleaned_parts[-3:]):
@@ -372,11 +495,29 @@ def _season_display(season: int | None, season_title: str, special_type: str, pa
     if special_type:
         tokens.append(special_type)
     elif season:
-        tokens.append(f"S{int(season):02d}")
-    if season_title and season_title not in tokens and season_title not in {"全集", "合集"}:
-        tokens.append(season_title)
-    if part:
-        tokens.append(f"Part {int(part)}")
+        # 如果有季标题（如 Stone Wars, NEW WORLD），就不添加季数标识
+        if not season_title or season_title in {"全集", "合集"}:
+            tokens.append(f"S{int(season):02d}")
+    
+    # 如果有 season_title，检查是否已经包含特殊类型
+    if season_title and season_title not in {"全集", "合集"}:
+        # 如果 season_title 已经包含特殊类型，就不再重复添加
+        if not (special_type and special_type in season_title):
+            tokens.append(season_title)
+        elif special_type and special_type in season_title:
+            # season_title 包含特殊类型，但我们已经添加了特殊类型，需要添加剩余部分
+            remaining = season_title.replace(special_type, "").strip()
+            if remaining:
+                tokens.append(remaining)
+    
+    # 只在 part 来自真正的 Part 标识时才显示（不是来自文件夹前缀）
+    # 文件夹前缀只用于排序，不显示在标题中
+    if part and part > 0:
+        # 检查是否是真正的 Part 标识（如 "Part 1" 格式）
+        # 如果只是文件夹数字前缀，不显示
+        # 这里我们假设如果 part 是从 PART_PATTERNS 匹配来的才显示
+        # 暂时先不显示，因为文件夹前缀的情况更多
+        pass
     return " ".join(tokens).strip()
 
 
@@ -392,8 +533,24 @@ def parse_video_filename(file_path):
     special_type = _detect_special_type(name, *(parts[-4:]))
     part_number = _detect_part(name, *(parts[-4:]))
     episode = _detect_episode(name)
+    
+    # 提取副标题和数字前缀（如 OVA 副标题）
+    extra_subtitle, folder_prefix = _extract_subtitle_from_path(*parts[-4:])
+    
+    # 如果 folder_prefix 不为零，使用它作为 part_number
+    if folder_prefix > 0 and not part_number:
+        part_number = folder_prefix
+    
     title, folder_season_title = _pick_title_candidate(parts[:-1], name, season, special_type)
     season_title = season_alias or folder_season_title
+    
+    # 如果有副标题且不是重复的，添加到 season_title 中
+    if extra_subtitle and extra_subtitle not in (season_title or "") and extra_subtitle not in title:
+        if season_title:
+            season_title = f"{season_title} {extra_subtitle}"
+        else:
+            season_title = extra_subtitle
+    
     category = _infer_media_category(parts, season, special_type)
     year = _extract_year(name, *(parts[-3:]))
     text_blob = " ".join(parts)
@@ -408,6 +565,7 @@ def parse_video_filename(file_path):
     )
 
     parsed = {
+        "title": title,
         "name": title,
         "full_name": full_name,
         "media_type": "动画" if category == "动漫" else ("剧集" if category == "电视剧" else "电影"),
@@ -429,7 +587,7 @@ def parse_video_filename(file_path):
         "season_title": season_title,
         "special_type": special_type,
         "part": int(part_number or 0),
-        "series_group": f"{title}__{season or 1}__{season_title or special_type or 'main'}",
+        "series_group": _build_series_group(title, season, season_title, special_type, part_number),
     }
 
     if series_hint:
@@ -444,6 +602,38 @@ def parse_video_filename(file_path):
 
     parsed["type"] = "movie"
     return parsed
+
+
+def _build_series_group(title: str, season: int | None, season_title: str, special_type: str, part: int | None) -> str:
+    """构建系列分组键，支持同一季的多个部分分开"""
+    # 特殊类型（如OVA、特别篇）独立分组
+    if special_type:
+        # 如果有 season_title（如 OVA 副标题），用它来区分不同的 OVA
+        if season_title:
+            # 清理 season_title 中的特殊类型前缀，避免重复
+            clean_title = season_title.replace(special_type, "").strip() if special_type in season_title else season_title
+            if clean_title:
+                # 如果有 part 编号，添加到分组中
+                if part and part > 0:
+                    return f"{title}__{season or 1}__{special_type}_{clean_title}_part{part}"
+                return f"{title}__{season or 1}__{special_type}_{clean_title}"
+        # 如果有 part 编号，添加到分组中
+        if part and part > 0:
+            return f"{title}__{season or 1}__{special_type}_part{part}"
+        return f"{title}__{season or 1}__{special_type}"
+    
+    # 如果有 season_title（如 Stone Wars），用它分组
+    if season_title:
+        # 如果有 part 编号，添加到分组中以区分同一季的不同部分
+        if part and part > 0:
+            return f"{title}__{season or 1}__{season_title}_part{part}"
+        return f"{title}__{season or 1}__{season_title}"
+    
+    # 如果有 part 编号，添加到分组中
+    if part and part > 0:
+        return f"{title}__{season or 1}__part{part}"
+    
+    return f"{title}__{season or 1}__main"
 
 
 def build_media_tags(movie):
@@ -520,16 +710,37 @@ def _get_search_name(series_title: str, season: int, season_title: str, special_
     search_parts = [series_title]
     if season > 1:
         search_parts.append(f"第{season}季")
-    # 只有当 season_title 不包含 series_title 且不是单纯的季数标识时才添加
-    if season_title and series_title not in season_title:
-        # 检查 season_title 是否只是季数标识（如 S01, S02）
-        if not re.match(r"^S\d{2}$", season_title):
-            # 如果 special_type 和 season_title 相同，则不再重复添加
-            if not (special_type and season_title == special_type):
-                search_parts.append(season_title)
-    # 对于 special_type，只添加类型标识，不添加整个文件夹名
-    if special_type:
+    
+    # 如果 season_title 存在且不只是季数标识
+    if season_title and season_title.strip():
+        # 检查是否只是季数标识
+        is_only_season = False
+        if re.match(r"^S\d{2}$", season_title):
+            is_only_season = True
+        # 检查是否只是特殊类型
+        if special_type and season_title == special_type:
+            is_only_season = True
+        # 检查是否只是中文数字季数
+        if re.match(r"^第[0-9一二三四五六七八九十]+季$", season_title):
+            is_only_season = True
+        
+        if not is_only_season:
+            # 清理 season_title 中的冗余信息（括号等）
+            cleaned_season_title = season_title
+            # 移除括号内容，如 (第三季上) -> 第三季上
+            cleaned_season_title = re.sub(r"\(([^)]+)\)", r"\1", cleaned_season_title)
+            # 移除 #1（默认部分不需要显示），保留 #2, #3 等
+            cleaned_season_title = re.sub(r"(?<!#)#\s*1\b", "", cleaned_season_title)
+            # 移除多余空格
+            cleaned_season_title = " ".join(cleaned_season_title.split()).strip()
+            
+            if cleaned_season_title and cleaned_season_title not in series_title:
+                search_parts.append(cleaned_season_title)
+    
+    # 对于 special_type，只添加类型标识
+    if special_type and special_type not in " ".join(search_parts):
         search_parts.append(special_type)
+    
     return " ".join(search_parts).strip()
 
 
@@ -590,7 +801,7 @@ def merge_series_videos(file_list):
         result.append(
             {
                 "title": first_ep["full_name"],
-                "name": first_ep["full_name"],
+                "name": first_ep["name"],  # 使用主标题，不是 full_name
                 "series_title": first_ep["name"],
                 "season": int(first_ep.get("season") or 1),
                 "season_title": first_ep.get("season_title", ""),
@@ -674,8 +885,13 @@ def merge_series_videos(file_list):
         key=lambda item: (
             int(item.get("sort_bucket") or 9),
             str(item.get("franchise") or ""),
-            str(item.get("sort_title") or item.get("title") or ""),
+            # 先按系列标题排序，确保同一系列排在一起
+            str(item.get("series_title") or item.get("title") or ""),
+            # 特别篇（OVA、SP、龙水篇等）排在所有正常季之后
+            1 if item.get("special_type") else 0,
             int(item.get("season") or 0),
+            # 先按 part 排序（处理文件夹数字前缀），再按 season_title 排序
+            int(item.get("part") or 0),
             str(item.get("season_title") or ""),
         ),
     )

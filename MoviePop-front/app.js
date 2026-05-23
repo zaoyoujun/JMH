@@ -1,4 +1,4 @@
-﻿﻿
+﻿﻿﻿﻿﻿﻿
 // 应用状态管理
 const state = {
   view: "all",
@@ -972,11 +972,11 @@ function stripSeasonTokenText(value, season = 0) {
 
 function stripSeasonSegmentMarkers(value) {
   return String(value || "")
-    .replace(/[#＃]\s*\d+/g, " ")
-    .replace(/\bpart\s*\d+\b/gi, " ")
+    // .replace(/[#＃]\s*\d+/g, " ")  // 保留 #1, #2 这样的部分编号
+    // .replace(/\bpart\s*\d+\b/gi, " ")  // 保留 Part 标识，用于区分同一季的不同部分
     .replace(/第\s*[\d一二三四五六七八九十]+\s*(部分|篇|章|部)/gi, " ")
-    .replace(/\b(前篇|后篇|後篇|上篇|下篇|前编|后编|後編)\b/gi, " ")
-    .replace(/\b([上下前后])\b/g, " ")
+    // .replace(/\b(前篇|后篇|後篇|上篇|下篇|前编|后编|後編)\b/gi, " ")  // 保留上下篇标识
+    // .replace(/\b([上下前后])\b/g, " ")  // 保留上下标识
     .replace(/\s+/g, " ")
     .replace(/^[·:：\-_.\s]+|[·:：\-_.\s]+$/g, "")
     .trim();
@@ -987,43 +987,75 @@ function getCompactSeasonTitle(entry, groupMovie = null) {
   if (!rawSeasonTitle) return "";
   const seriesTitle = getSeriesDisplayTitle(groupMovie || entry);
   const seasonNumber = Number(entry?.season || 0);
-  const compact = stripSeasonSegmentMarkers(stripSeasonTokenText(stripSeriesPrefix(rawSeasonTitle, seriesTitle), seasonNumber));
-  return compact && normalizeSeriesFolderName(compact) !== normalizeSeriesFolderName(seriesTitle) ? compact : "";
+  
+  // 先清理系列标题前缀和季数标识，但保留部分编号（如 #1, #2）和上下标识
+  let compact = stripSeriesPrefix(rawSeasonTitle, seriesTitle);
+  
+  // 只移除季数标识（如 S01, 第1季），保留其他信息
+  if (seasonNumber > 0) {
+    compact = compact
+      .replace(new RegExp(`第\\s*${seasonNumber}\\s*季`, "gi"), "")
+      .replace(new RegExp(`Season\\s*${seasonNumber}`, "gi"), "")
+      .replace(new RegExp(`S0?${seasonNumber}(?!\\d)`, "gi"), "");
+  }
+  
+  // 清理多余空格
+  compact = compact.replace(/\s+/g, " ").replace(/^[·:：\-_.\s]+|[·:：\-_.\s]+$/g, "").trim();
+  
+  // 如果清理后不为空且不等于系列标题，返回它
+  // 放宽判断条件，只要不为空就返回
+  if (compact && compact.trim()) {
+    const normalizedCompact = normalizeSeriesFolderName(compact);
+    const normalizedSeries = normalizeSeriesFolderName(seriesTitle);
+    // 如果副标题只是数字或简单的季标识，则不显示
+    if (!/^\d+$/.test(compact.trim()) && normalizedCompact !== normalizedSeries) {
+      return compact;
+    }
+  }
+  return "";
 }
 
 function getSeasonEntryLabel(entry, groupMovie = null, fallbackIndex = 0) {
+  const seriesTitle = getSeriesDisplayTitle(groupMovie || entry);
   const seasonLabel = getSeasonLabel(entry, fallbackIndex);
   const extras = [];
   const seasonTitle = getCompactSeasonTitle(entry, groupMovie);
   const specialType = String(entry?.special_type || "").trim();
-  const groupSeriesTitle = getSeriesDisplayTitle(groupMovie);
-  const entrySeriesTitle = getSeriesDisplayTitle(entry);
-  const normalizedGroupSeries = normalizeSeriesFolderName(groupSeriesTitle);
-  const normalizedEntrySeries = normalizeSeriesFolderName(entrySeriesTitle);
+  const seasonNumber = Number(entry?.season || 0);
 
-  if (
-    seasonTitle &&
-    seasonTitle !== seasonLabel &&
-    normalizeSeriesFolderName(seasonTitle) !== normalizedGroupSeries &&
-    normalizeSeriesFolderName(seasonTitle) !== normalizedEntrySeries
-  ) {
+  // 如果有季标题且不是重复的，添加到 extras
+  if (seasonTitle && seasonTitle !== seasonLabel) {
     extras.push(seasonTitle);
   }
-  if (
-    specialType &&
-    specialType !== seasonLabel &&
-    !extras.some((item) => normalizeSeriesFolderName(item) === normalizeSeriesFolderName(specialType))
-  ) {
+  
+  // 如果有特殊类型且不是重复的，添加到 extras
+  if (specialType && specialType !== seasonLabel) {
     extras.push(specialType);
   }
+  
+  // 如果有 part 编号且 part > 1，添加 #N（#1 不显示）
   const part = Number(entry?.part || 0);
-  if (part > 0) {
-    const partLabel = `Part ${part}`;
-    if (!extras.some((item) => normalizeSeriesFolderName(item) === normalizeSeriesFolderName(partLabel))) {
-      extras.push(partLabel);
-    }
+  if (part > 1) {
+    extras.push(`#${part}`);
   }
-  return extras.length ? `${seasonLabel} · ${extras.join(" · ")}` : seasonLabel;
+  
+  // 构建最终标签
+  if (specialType) {
+    // 特别篇格式：系列名·特别篇名
+    return `${seriesTitle}·${specialType}`;
+  }
+  
+  if (extras.length > 0) {
+    // 正常季格式：系列名·副标题（季数信息）
+    // 如果季数大于1，也显示季数
+    if (seasonNumber > 1) {
+      return `${seriesTitle}·第${seasonNumber}季·${extras.join(" ")}`;
+    }
+    return `${seriesTitle}·${extras.join(" ")}`;
+  }
+  
+  // 默认格式：系列名（第N季）
+  return `${seriesTitle}（第${entry?.season || 1}季）`;
 }
 
 function normalizeSeriesFolderName(name) {
@@ -1032,7 +1064,7 @@ function normalizeSeriesFolderName(name) {
     .replace(/\u7b2c\s*[\d\u4e00-\u5341]+\s*\u5b63/gi, " ")
     .replace(/season\s*\d+/gi, " ")
     .replace(/s\d{1,2}/gi, " ")
-    .replace(/[#＃]\d+/g, " ")
+    // .replace(/[#＃]\d+/g, " ")  // 保留 #1, #2 这样的部分编号
     .replace(/[（(].*?(季|篇|part|final|上|下).*?[)）]/gi, " ")
     .replace(/[._()\[\]-]+/g, " ")
     .replace(/\s+/g, " ")
@@ -1087,7 +1119,15 @@ function buildSeasonBucketKey(entry) {
   if (specialType) {
     return `special::${specialType}::${normalizeSeriesFolderName(getCompactSeasonTitle(entry) || String(entry?.season_title || ""))}`;
   }
-  if (seasonNumber > 0) return `season::${seasonNumber}`;
+  if (seasonNumber > 0) {
+    // 包含 season_title 和 part 字段，确保同一季的不同部分正确分开
+    const seasonTitle = normalizeSeriesFolderName(getCompactSeasonTitle(entry) || String(entry?.season_title || ""));
+    const partNumber = Number(entry?.part || 0);
+    let key = `season::${seasonNumber}`;
+    if (seasonTitle) key += `::${seasonTitle}`;
+    if (partNumber > 0) key += `::part${partNumber}`;
+    return key;
+  }
   return `path::${entry?.path || ""}`;
 }
 
@@ -1132,8 +1172,22 @@ function mergeSeasonEntries(entries = []) {
 
 function buildGroupedSeries(groupItems) {
   const seasons = mergeSeasonEntries(groupItems).sort((left, right) => {
+    // 特别篇（有 special_type）排在最后
+    const leftIsSpecial = Boolean(left?.special_type);
+    const rightIsSpecial = Boolean(right?.special_type);
+    
+    if (leftIsSpecial && !rightIsSpecial) return 1;  // 特别篇排后面
+    if (!leftIsSpecial && rightIsSpecial) return -1; // 正常季排前面
+    
+    // 按季数排序
     const seasonGap = Number(left.season || 0) - Number(right.season || 0);
     if (seasonGap !== 0) return seasonGap;
+    
+    // 同季数按 part 排序
+    const partGap = Number(left.part || 0) - Number(right.part || 0);
+    if (partGap !== 0) return partGap;
+    
+    // 同季数同 part 按路径排序
     return String(left.path || "").localeCompare(String(right.path || ""));
   });
   const primary = seasons.find((item) => item.cover_url || item.intro) || seasons[0];

@@ -6,11 +6,12 @@
 
 - **多源媒体库管理**：支持 WebDAV、OpenList 网盘（夸克/阿里/115/百度）、本地目录三种来源
 - **元数据刮削**：从 TMDB、豆瓣、动漫科自动获取封面、简介、年份
-- **智能推荐系统**：基于用户画像的内容相似度推荐 + 协同过滤 + 多平台外部推荐
+- **智能推荐系统**：基于用户画像的内容相似度推荐 + 协同过滤 + 多平台外部推荐 + SQLite 持久化推荐数据
 - **ECharts 数据可视化大屏**：饼图、折线图、条形图、雷达图交互式观影分析
-- **播放进度同步**：支持 PotPlayer / VLC / VLC 受控模式，跨设备播放进度记录
-- **标签系统**：自动标签生成 + 手动标签管理
+- **播放进度同步**：支持 MPV 桌面播放器及 MPV 受控模式，跨设备播放进度记录
+- **标签系统**：自动标签生成 + 手动标签管理 + 增强文件名解析识别
 - **观影报告**：类型分布、年代趋势、完播统计、近期动态
+- **观影行为分析**：用户画像、观影时长趋势、类型偏好、时段分布、完播率分析
 - **多主题界面**：amber / graphite / forest / coast 四种配色
 
 ## 技术栈
@@ -35,7 +36,8 @@ JMH-split/
 │   ├── backend/
 │   │   ├── app.py           # FastAPI 路由
 │   │   ├── services.py      # 业务服务层
-│   │   ├── recommendations.py # 推荐引擎
+│   │   ├── behavior_analytics.py  # 观影行为分析
+│   │   ├── recommendation_repository.py # 推荐数据持久化
 │   │   ├── analytics.py     # 数据分析 ETL
 │   │   ├── warehouse.py     # ClickHouse 数据仓库
 │   │   ├── jobs.py          # 后台任务管理
@@ -46,12 +48,13 @@ JMH-split/
 │   │   ├── cover_scraper.py # 元数据刮削器
 │   │   ├── video_library.py # 远程媒体库
 │   │   ├── local_video_library.py # 本地媒体库
+│   │   ├── remote_source.py # 远程源统一抽象
 │   │   ├── webdav_client.py # WebDAV 客户端
 │   │   ├── openlist_client.py # OpenList API
 │   │   └── openlist_manager.py # OpenList 进程管理
 │   ├── utils/
 │   │   ├── database.py      # JSON 缓存层
-│   │   ├── filename_parser.py # 文件名解析
+│   │   ├── filename_parser.py # 文件名解析（增强版）
 │   │   └── logger.py        # 日志配置
 │   ├── requirements.txt     # Python 依赖
 │   ├── run_api.py           # API 启动入口
@@ -115,9 +118,18 @@ python run_backend.py
 ## 项目状态
 
 - 开发状态：活跃维护中
-- 版本：v2.0（拆分重构版本）
+- 版本：v2.2（增强版本）
 
 ## 更新日志
+
+### v2.2（增强版本）
+- 播放器全面迁移至 MPV 桌面版及受控模式
+- 新增观影行为分析模块（用户画像、时长趋势、类型偏好、时段分布、完播率）
+- 推荐数据迁移至 SQLite 持久化存储
+- 新增 `core/remote_source.py` 远程源统一抽象层
+- 文件名解析器大幅增强（季数/特别篇/部分识别、系列分组、分辨率/编码解析）
+- 缓存数据模型扩展（支持 season_title、special_type、resolution、codec 等新字段）
+- API 版本 2.2.0
 
 ### v2.0（拆分重构）
 - 项目拆分为前后端分离结构
