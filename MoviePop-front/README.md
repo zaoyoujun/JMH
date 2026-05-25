@@ -24,6 +24,7 @@ MoviePop-front/
 - 播放进度管理
 - 智能推荐系统
 - ECharts 数据可视化大屏
+- 观影行为分析看板
 - 多主题切换（amber/graphite/forest/coast）
 
 ## 开发说明

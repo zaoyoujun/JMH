@@ -12,9 +12,10 @@
 9. [后台任务](#9-后台任务)
 10. [缓存管理](#10-缓存管理)
 11. [OpenList 网盘管理](#11-openlist-网盘管理)
-12. [VLC 受控播放会话](#12-vlc-受控播放会话)
+12. [MPV 受控播放会话](#12-mpv-受控播放会话)
 13. [播放器运行时](#13-播放器运行时)
 14. [流媒体代理](#14-流媒体代理)
+15. [观影行为分析](#15-观影行为分析)
 
 ---
 
@@ -44,6 +45,7 @@
 | |- config | object | 非必须 | 应用配置信息 |
 | |- stats | object | 非必须 | 统计数据 |
 | |- has_library | boolean | 非必须 | 是否有影片库 |
+| |- player_runtime | object | 非必须 | 播放器运行时状态 |
 
 响应数据样例：
 ```json
@@ -62,7 +64,8 @@
       "favorites": 12,
       "recent": 8
     },
-    "has_library": true
+    "has_library": true,
+    "player_runtime": {}
   }
 }
 ```
@@ -93,21 +96,23 @@
 | msg | string | 非必须 | 提示信息 |
 | data | object | 非必须 | 返回的数据 |
 | |- remote_provider | string | 非必须 | 远程源类型 (webdav/openlist) |
+| |- remote_profiles | object | 非必须 | 远程源多配置档 |
 | |- webdav_host | string | 非必须 | WebDAV 主机地址 |
 | |- webdav_user | string | 非必须 | WebDAV 用户名 |
 | |- webdav_pass | string | 非必须 | WebDAV 密码 |
 | |- remote_cookie | string | 非必须 | 远程源 Cookie |
+| |- openlist_source_mode | string | 非必须 | OpenList 源模式 (builtin/external) |
 | |- scan_max_depth | number | 非必须 | 扫描最大深度 |
 | |- saved_mount_dirs | array | 非必须 | 已保存的挂载目录列表 |
 | |- local_scan_max_depth | number | 非必须 | 本地扫描最大深度 |
 | |- local_mount_dirs | array | 非必须 | 本地挂载目录列表 |
-| |- potplayer_path | string | 非必须 | PotPlayer 可执行文件路径 |
-| |- vlc_path | string | 非必须 | VLC 可执行文件路径 |
-| |- default_player | string | 非必须 | 默认播放器 (potplayer/vlc) |
+| |- mpv_path | string | 非必须 | MPV 可执行文件路径 |
+| |- default_player | string | 非必须 | 默认播放器 (mpv/mpv_desktop) |
 | |- video_formats | array | 非必须 | 视频格式列表 |
 | |- enable_auto_scrape | boolean | 非必须 | 是否启用自动刮削 |
 | |- scrape_source | string | 非必须 | 刮削源 (auto/tmdb) |
 | |- tmdb_api_key | string | 非必须 | TMDB API 密钥 |
+| |- douban_cookie | string | 非必须 | 豆瓣 Cookie |
 | |- tmdb_api_base | string | 非必须 | TMDB API 基础地址 |
 | |- tmdb_web_base | string | 非必须 | TMDB 网站地址 |
 | |- tmdb_image_base | string | 非必须 | TMDB 图片地址 |
@@ -122,21 +127,23 @@
   "msg": "success",
   "data": {
     "remote_provider": "webdav",
+    "remote_profiles": {},
     "webdav_host": "https://dav.example.com",
     "webdav_user": "user",
     "webdav_pass": "",
     "remote_cookie": "",
+    "openlist_source_mode": "builtin",
     "scan_max_depth": 2,
     "saved_mount_dirs": ["/movies", "/tv"],
     "local_scan_max_depth": 3,
     "local_mount_dirs": [],
-    "potplayer_path": "C:\\Program Files\\PotPlayer\\PotPlayerMini64.exe",
-    "vlc_path": "",
-    "default_player": "potplayer",
+    "mpv_path": "D:\\app\\mpv\\mpv.exe",
+    "default_player": "mpv_desktop",
     "video_formats": [".mp4", ".mkv", ".avi", ".mov"],
     "enable_auto_scrape": true,
     "scrape_source": "auto",
     "tmdb_api_key": "",
+    "douban_cookie": "",
     "tmdb_api_base": "https://api.themoviedb.org/3",
     "tmdb_web_base": "https://www.themoviedb.org",
     "tmdb_image_base": "https://image.tmdb.org/t/p/w500",
@@ -163,21 +170,23 @@
 | 参数名 | 类型 | 是否必须 | 备注 |
 |--------|------|----------|------|
 | remote_provider | string | 非必须 | 远程源类型 (webdav/openlist) |
+| remote_profiles | object | 非必须 | 远程源多配置档 |
 | webdav_host | string | 非必须 | WebDAV 主机地址 |
 | webdav_user | string | 非必须 | WebDAV 用户名 |
 | webdav_pass | string | 非必须 | WebDAV 密码 |
 | remote_cookie | string | 非必须 | 远程源 Cookie |
+| openlist_source_mode | string | 非必须 | OpenList 源模式 (builtin/external) |
 | scan_max_depth | number | 非必须 | 扫描最大深度 |
 | saved_mount_dirs | array | 非必须 | 已保存的挂载目录列表 |
 | local_scan_max_depth | number | 非必须 | 本地扫描最大深度 |
 | local_mount_dirs | array | 非必须 | 本地挂载目录列表 |
-| potplayer_path | string | 非必须 | PotPlayer 可执行文件路径 |
-| vlc_path | string | 非必须 | VLC 可执行文件路径 |
-| default_player | string | 非必须 | 默认播放器 (potplayer/vlc) |
+| mpv_path | string | 非必须 | MPV 可执行文件路径 |
+| default_player | string | 非必须 | 默认播放器 (mpv/mpv_desktop) |
 | video_formats | array | 非必须 | 视频格式列表 |
 | enable_auto_scrape | boolean | 非必须 | 是否启用自动刮削 |
 | scrape_source | string | 非必须 | 刮削源 (auto/tmdb) |
 | tmdb_api_key | string | 非必须 | TMDB API 密钥 |
+| douban_cookie | string | 非必须 | 豆瓣 Cookie |
 | tmdb_api_base | string | 非必须 | TMDB API 基础地址 |
 | tmdb_web_base | string | 非必须 | TMDB 网站地址 |
 | tmdb_image_base | string | 非必须 | TMDB 图片地址 |
@@ -193,7 +202,7 @@
   "webdav_user": "user",
   "webdav_pass": "password",
   "scan_max_depth": 3,
-  "default_player": "vlc",
+  "default_player": "mpv_desktop",
   "interface_language": "zh"
 }
 ```
@@ -218,7 +227,7 @@
     "remote_provider": "webdav",
     "webdav_host": "https://dav.example.com",
     "webdav_user": "user",
-    "default_player": "vlc",
+    "default_player": "mpv_desktop",
     "interface_language": "zh"
   }
 }
@@ -503,8 +512,14 @@
 |--------|------|----------|------|
 | title | string | 非必须 | 标题 |
 | name | string | 非必须 | 名称 |
+| series_title | string | 非必须 | 系列标题 |
+| season | number | 非必须 | 季数 |
+| season_title | string | 非必须 | 季副标题 |
+| special_type | string | 非必须 | 特殊类型：OVA/特别篇/剧场版/外传等 |
+| part | number | 非必须 | 部分编号 |
 | type | string | 非必须 | 类型：电影/剧集/动画/视频 |
 | year | number | 非必须 | 年份 |
+| category | string | 非必须 | 媒体分类：电影/电视剧/动漫 |
 | intro | string | 非必须 | 简介 |
 | rating | number | 非必须 | 评分 |
 | duration | string | 非必须 | 时长 |
@@ -521,6 +536,14 @@
 | source | string | 非必须 | 来源：remote/local |
 | remote_provider | string | 非必须 | 远程源类型：webdav/openlist |
 | source_label | string | 非必须 | 来源标签显示名 |
+| resolution | string | 非必须 | 分辨率：2160p/1080p/720p |
+| video_codec | string | 非必须 | 视频编码：HEVC/AVC |
+| audio_info | string | 非必须 | 音频信息 |
+| subtitle_info | string | 非必须 | 字幕信息 |
+| release_group | string | 非必须 | 压制组 |
+| franchise | string | 非必须 | 系列归属 |
+| sort_bucket | number | 非必须 | 排序桶 |
+| sort_title | string | 非必须 | 排序用标题 |
 | playback | object | 非必须 | 播放进度 |
 | |- progress | number | 非必须 | 播放进度（秒） |
 | |- duration | number | 非必须 | 总时长（秒） |
@@ -528,6 +551,8 @@
 | |- timestamp | number | 非必须 | 时间戳 |
 | |- has_progress | boolean | 非必须 | 是否有播放进度 |
 | tags | array | 非必须 | 标签列表 |
+| inferred_tags | array | 非必须 | 自动推断标签 |
+| manual_tags | array | 非必须 | 手动标签 |
 
 响应数据样例：
 ```json
@@ -539,8 +564,14 @@
       {
         "title": "速度与激情10",
         "name": "速度与激情10",
+        "series_title": "速度与激情",
+        "season": 1,
+        "season_title": "",
+        "special_type": "",
+        "part": 0,
         "type": "电影",
         "year": 2023,
+        "category": "电影",
         "intro": "在完成了无数任务之后...",
         "rating": 7.5,
         "duration": "141分钟",
@@ -557,6 +588,14 @@
         "source": "remote",
         "remote_provider": "webdav",
         "source_label": "WebDAV",
+        "resolution": "1080p",
+        "video_codec": "HEVC",
+        "audio_info": "多音轨",
+        "subtitle_info": "ass",
+        "release_group": "",
+        "franchise": "速度与激情",
+        "sort_bucket": 2,
+        "sort_title": "速度与激情10",
         "playback": {
           "progress": 3600,
           "duration": 8460,
@@ -564,7 +603,9 @@
           "timestamp": 1714123456,
           "has_progress": true
         },
-        "tags": ["动作", "赛车"]
+        "tags": ["动作", "赛车"],
+        "inferred_tags": ["电影", "单片", "1080p", "HEVC", "多音轨"],
+        "manual_tags": []
       }
     ],
     "stats": {
@@ -772,8 +813,14 @@
     "movie": {
       "title": "速度与激情10",
       "name": "速度与激情10",
+      "series_title": "速度与激情",
+      "season": 1,
+      "season_title": "",
+      "special_type": "",
+      "part": 0,
       "type": "电影",
       "year": 2023,
+      "category": "电影",
       "intro": "在完成了无数任务之后...",
       "rating": 7.5,
       "duration": "141分钟",
@@ -790,6 +837,12 @@
       "source": "remote",
       "remote_provider": "webdav",
       "source_label": "WebDAV",
+      "resolution": "1080p",
+      "video_codec": "HEVC",
+      "audio_info": "多音轨",
+      "subtitle_info": "ass",
+      "release_group": "",
+      "franchise": "速度与激情",
       "playback": {
         "progress": 3600,
         "duration": 8460,
@@ -797,7 +850,9 @@
         "timestamp": 1714123456,
         "has_progress": true
       },
-      "tags": ["动作", "赛车"]
+      "tags": ["动作", "赛车"],
+      "inferred_tags": ["电影", "单片"],
+      "manual_tags": []
     }
   }
 }
@@ -947,8 +1002,8 @@
   "data": {
     "success": true,
     "result": {
-      "player": "potplayer",
-      "path": "C:\\Program Files\\PotPlayer\\PotPlayerMini64.exe"
+      "player": "mpv",
+      "path": "D:\\app\\mpv\\mpv.exe"
     },
     "stats": {
       "total": 150,
@@ -1214,13 +1269,13 @@
 
 | 参数名 | 类型 | 是否必须 | 备注 |
 |--------|------|----------|------|
-| player | string | 非必须 | 播放器类型：potplayer/vlc，默认为 "potplayer" |
+| player | string | 非必须 | 播放器类型：mpv/mpv_desktop，默认为 "mpv" |
 | current_path | string | 非必须 | 当前路径 |
 
 请求参数样例：
 ```json
 {
-  "player": "vlc",
+  "player": "mpv",
   "current_path": "C:\\Program Files"
 }
 ```
@@ -1243,7 +1298,7 @@
   "code": 1,
   "msg": "success",
   "data": {
-    "path": "C:\\Program Files\\VideoLAN\\VLC\\vlc.exe"
+    "path": "D:\\app\\mpv\\mpv.exe"
   }
 }
 ```
@@ -1424,6 +1479,50 @@ DELETE /api/movies/%2Fmovies%2F速度与激情10.mp4/progress
         "percent": 0,
         "timestamp": 0,
         "has_progress": false
+      }
+    }
+  }
+}
+```
+
+### 5.14 获取所有播放进度
+#### 5.14.1 基本信息
+请求路径：/api/movies/all-progress
+
+请求方式：GET
+
+接口描述：该接口用于获取所有影片的播放进度
+
+#### 5.14.2 请求参数
+无
+
+#### 5.14.3 响应数据
+参数格式：application/json
+
+参数说明：
+
+| 参数名 | 类型 | 是否必须 | 备注 |
+|--------|------|----------|------|
+| code | number | 必须 | 响应码，1 代表成功，0 代表失败 |
+| msg | string | 非必须 | 提示信息 |
+| data | object | 非必须 | 返回的数据 |
+| |- success | boolean | 非必须 | 操作是否成功 |
+| |- progress | object | 非必须 | 所有影片的播放进度映射 |
+
+响应数据样例：
+```json
+{
+  "code": 1,
+  "msg": "success",
+  "data": {
+    "success": true,
+    "progress": {
+      "/movies/速度与激情10.mp4": {
+        "progress": 3600,
+        "duration": 8460,
+        "percent": 42,
+        "timestamp": 1714123456,
+        "has_progress": true
       }
     }
   }
@@ -2915,15 +3014,15 @@ GET /api/jobs/abc123-def456
 
 ---
 
-## 12. VLC 受控播放会话
+## 12. MPV 受控播放会话
 
-### 12.1 启动 VLC 受控播放会话
+### 12.1 启动 MPV 受控播放会话
 #### 12.1.1 基本信息
-请求路径：/api/vlc/session/start
+请求路径：/api/mpv/session/start
 
 请求方式：POST
 
-接口描述：该接口用于启动 VLC 受控播放会话，通过 VLC 的 RC 接口实现播放进度自动同步
+接口描述：该接口用于启动 MPV 受控播放会话，通过 MPV 的 IPC 接口实现播放进度自动同步
 
 #### 12.1.2 请求参数
 参数格式：application/json
@@ -2965,8 +3064,8 @@ GET /api/jobs/abc123-def456
   "data": {
     "success": true,
     "result": {
-      "player": "vlc",
-      "path": "D:/app/VLC/vlc.exe"
+      "player": "mpv",
+      "path": "D:/app/mpv/mpv.exe"
     },
     "stats": {
       "total": 150,
@@ -2977,13 +3076,13 @@ GET /api/jobs/abc123-def456
 }
 ```
 
-### 12.2 获取 VLC 受控播放会话状态
+### 12.2 获取 MPV 受控播放会话状态
 #### 12.2.1 基本信息
-请求路径：/api/vlc/session
+请求路径：/api/mpv/session
 
 请求方式：GET
 
-接口描述：该接口用于获取当前 VLC 受控播放会话的状态信息
+接口描述：该接口用于获取当前 MPV 受控播放会话的状态信息
 
 #### 12.2.2 请求参数
 无
@@ -3001,13 +3100,13 @@ GET /api/jobs/abc123-def456
 | |- success | boolean | 非必须 | 操作是否成功 |
 | |- result | object | 非必须 | 会话状态信息 |
 
-### 12.3 控制 VLC 受控播放会话
+### 12.3 控制 MPV 受控播放会话
 #### 12.3.1 基本信息
-请求路径：/api/vlc/session/command
+请求路径：/api/mpv/session/command
 
 请求方式：POST
 
-接口描述：该接口用于向 VLC 受控播放会话发送控制指令（暂停、跳转、音量等）
+接口描述：该接口用于向 MPV 受控播放会话发送控制指令（暂停、跳转、音量等）
 
 #### 12.3.2 请求参数
 参数格式：application/json
@@ -3040,13 +3139,13 @@ GET /api/jobs/abc123-def456
 | |- success | boolean | 非必须 | 操作是否成功 |
 | |- result | object | 非必须 | 控制结果 |
 
-### 12.4 停止 VLC 受控播放会话
+### 12.4 停止 MPV 受控播放会话
 #### 12.4.1 基本信息
-请求路径：/api/vlc/session
+请求路径：/api/mpv/session
 
 请求方式：DELETE
 
-接口描述：该接口用于停止当前 VLC 受控播放会话
+接口描述：该接口用于停止当前 MPV 受控播放会话
 
 #### 12.4.2 请求参数
 无
@@ -3072,7 +3171,7 @@ GET /api/jobs/abc123-def456
 
 请求方式：GET
 
-接口描述：该接口用于获取播放器运行时状态信息，包括 VLC 会话状态等
+接口描述：该接口用于获取播放器运行时状态信息，包括 MPV 会话状态等
 
 #### 13.1.2 请求参数
 无
@@ -3185,6 +3284,223 @@ GET /api/jobs/abc123-def456
 
 ---
 
+## 15. 观影行为分析
+
+### 15.1 上报观看行为
+#### 15.1.1 基本信息
+请求路径：/api/behavior/watch
+
+请求方式：POST
+
+接口描述：该接口用于上报用户观看行为数据，用于生成用户画像和分析报告
+
+#### 15.1.2 请求参数
+参数格式：application/json
+
+参数说明：
+
+| 参数名 | 类型 | 是否必须 | 备注 |
+|--------|------|----------|------|
+| media_id | string | 必须 | 媒体 ID（影片路径） |
+| duration | number | 必须 | 观看时长（秒） |
+| progress | number | 非必须 | 播放进度（秒） |
+| media_type | string | 非必须 | 媒体类型 |
+| genres | array | 非必须 | 类型列表 |
+
+请求参数样例：
+```json
+{
+  "media_id": "/movies/速度与激情10.mp4",
+  "duration": 3600,
+  "progress": 3600,
+  "media_type": "电影",
+  "genres": ["动作", "赛车"]
+}
+```
+
+#### 15.1.3 响应数据
+```json
+{
+  "code": 1,
+  "msg": "success",
+  "data": {
+    "success": true,
+    "message": "行为数据已记录"
+  }
+}
+```
+
+### 15.2 获取用户观影画像
+#### 15.2.1 基本信息
+请求路径：/api/analytics/user-profile
+
+请求方式：GET
+
+接口描述：该接口用于获取基于用户观影行为分析的用户画像
+
+#### 15.2.2 请求参数
+无
+
+#### 15.2.3 响应数据
+```json
+{
+  "code": 1,
+  "msg": "success",
+  "data": {
+    "favorite_genres": ["科幻", "动作"],
+    "favorite_directors": ["克里斯托弗·诺兰"],
+    "total_watch_time": 120.5,
+    "total_watch_count": 45,
+    "average_session": 2.67,
+    "completion_rate": 0.85
+  }
+}
+```
+
+### 15.3 获取观影时长趋势
+#### 15.3.1 基本信息
+请求路径：/api/analytics/watch-duration-trend
+
+请求方式：GET
+
+接口描述：该接口用于获取指定天数内的观影时长趋势
+
+#### 15.3.2 请求参数
+| 参数名 | 类型 | 是否必须 | 备注 |
+|--------|------|----------|------|
+| days | number | 非必须 | 统计天数，默认 30（7-90 天） |
+
+请求参数样例：
+```
+/api/analytics/watch-duration-trend?days=30
+```
+
+#### 15.3.3 响应数据
+```json
+{
+  "code": 1,
+  "msg": "success",
+  "data": {
+    "data": [
+      {"date": "2024-05-01", "total_duration": 180, "watch_count": 3}
+    ]
+  }
+}
+```
+
+### 15.4 获取类型偏好分布
+#### 15.4.1 基本信息
+请求路径：/api/analytics/genre-preference
+
+请求方式：GET
+
+接口描述：该接口用于获取用户观影类型偏好分布
+
+#### 15.4.2 请求参数
+无
+
+#### 15.4.3 响应数据
+```json
+{
+  "code": 1,
+  "msg": "success",
+  "data": {
+    "data": [
+      {"name": "动作", "value": 35},
+      {"name": "科幻", "value": 28}
+    ]
+  }
+}
+```
+
+### 15.5 获取观看时段分布
+#### 15.5.1 基本信息
+请求路径：/api/analytics/time-distribution
+
+请求方式：GET
+
+接口描述：该接口用于获取用户观影时段分布（按小时）
+
+#### 15.5.2 请求参数
+无
+
+#### 15.5.3 响应数据
+```json
+{
+  "code": 1,
+  "msg": "success",
+  "data": {
+    "data": [
+      {"hour": "09:00", "count": 12},
+      {"hour": "21:00", "count": 35}
+    ]
+  }
+}
+```
+
+### 15.6 获取完播率分析
+#### 15.6.1 基本信息
+请求路径：/api/analytics/completion-rate
+
+请求方式：GET
+
+接口描述：该接口用于获取影片完播率分析
+
+#### 15.6.2 请求参数
+无
+
+#### 15.6.3 响应数据
+```json
+{
+  "code": 1,
+  "msg": "success",
+  "data": {
+    "overall_completion_rate": 0.85,
+    "high_completion": 30,
+    "partial_completion": 12,
+    "low_completion": 3
+  }
+}
+```
+
+### 15.7 获取完整行为分析报告
+#### 15.7.1 基本信息
+请求路径：/api/analytics/full-report
+
+请求方式：GET
+
+接口描述：该接口用于获取包含所有维度的完整行为分析报告
+
+#### 15.7.2 请求参数
+无
+
+#### 15.7.3 响应数据
+返回包含用户画像、时长趋势、类型偏好、时段分布、完播率等所有分析维度的综合数据。
+
+### 15.8 检查是否有行为数据
+#### 15.8.1 基本信息
+请求路径：/api/analytics/has-data
+
+请求方式：GET
+
+接口描述：该接口用于检查是否有足够的观影行为数据进行分析
+
+#### 15.8.2 请求参数
+无
+
+#### 15.8.3 响应数据
+```json
+{
+  "code": 1,
+  "msg": "success",
+  "data": {
+    "has_data": true
+  }
+}
+```
+
+---
+
 ## 附录
 
 ### A. 通用响应格式
@@ -3227,7 +3543,16 @@ GET /api/jobs/abc123-def456
 - `webdav`: WebDAV 协议
 - `openlist`: OpenList 网盘服务
 
-### F. URL 编码
+### G. 播放器类型
+- `mpv`: MPV 播放器（命令行模式）
+- `mpv_desktop`: MPV 播放器（桌面版）
+
+### H. 刮削源类型
+- `auto`: 自动选择（动漫→动漫科，其他→TMDB）
+- `tmdb`: TMDB
+- `动漫科`: 动漫专属刮削源（当 category=动漫 时自动使用）
+
+### I. URL 编码
 路径参数中的特殊字符需要进行 URL 编码，例如：
 - `/movies/video.mp4` -> `%2Fmovies%2Fvideo.mp4`
 - 空格 -> `%20`
