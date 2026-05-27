@@ -796,6 +796,16 @@ def list_openlist_directories(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+@app.get("/api/openlist/files")
+def list_openlist_files(
+    path: str = Query(default="/"),
+) -> list[dict[str, Any]]:
+    try:
+        return openlist_service.list_files(path)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @app.post("/api/openlist/storages")
 def add_openlist_storage(payload: OpenListStoragePayload) -> dict[str, Any]:
     try:

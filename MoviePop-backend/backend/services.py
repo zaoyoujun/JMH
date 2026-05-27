@@ -977,6 +977,8 @@ class PlaybackService:
         profile_dir.mkdir(parents=True, exist_ok=True)
         script_opts_dir = profile_dir / "script-opts"
         script_opts_dir.mkdir(parents=True, exist_ok=True)
+        scripts_dir = profile_dir / "scripts"
+        scripts_dir.mkdir(parents=True, exist_ok=True)
         watch_later_dir = profile_dir / "watch_later"
         watch_later_dir.mkdir(parents=True, exist_ok=True)
 
@@ -992,6 +994,7 @@ class PlaybackService:
                     "keep-open=yes",
                     "force-window=immediate",
                     f"watch-later-dir={watch_later_dir}",
+                    f"script-dir={profile_dir / 'scripts'}",
                     "write-filename-in-watch-later-config=yes",
                     "resume-playback=no",
                     "watch-later-options=start",
@@ -1075,6 +1078,8 @@ class PlaybackService:
                     "RIGHT seek 5 exact",
                     "WHEEL_UP add volume 3",
                     "WHEEL_DOWN add volume -3",
+                    "> script-message next-episode",
+                    "< script-message prev-episode",
                     "",
                 ]
             ),
@@ -2336,6 +2341,28 @@ class OpenListService:
         if recursive:
             return self._list_dirs_recursive(client, password, path)
         return self._list_dirs_at(client, password, path)
+
+    def list_files(self, path: str = "/") -> list[dict[str, Any]]:
+        """列出指定目录下的所有文件"""
+        client = self._get_openlist_client()
+        password = self._ensure_openlist_password(client)
+        try:
+            normalized_path = self._normalize_openlist_path(path)
+            data = client.list_files(password, normalized_path)
+            content = data.get("data", {}).get("content") or []
+            result = []
+            for item in content:
+                if item.get("is_dir"):
+                    continue
+                name = str(item.get("name") or "").strip()
+                if not name:
+                    continue
+                result.append({"name": name, "full_path": normalized_path + "/" + name})
+            logger.info("OpenList list_files path=%s -> %s files", path, len(result))
+            return result
+        except Exception as exc:
+            logger.error("OpenList list_files 失败 path=%s: %s", path, exc)
+            raise
 
     def _ensure_openlist_password(self, client) -> str:
         """?????? OpenList?????????????"""

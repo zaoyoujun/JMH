@@ -121,6 +121,18 @@ class RecommendationRepository:
             cursor = conn.execute("SELECT tag FROM tags WHERE movie_path = ?", (movie_path,))
             return [row[0] for row in cursor.fetchall()]
 
+    def get_tags_map(self) -> dict[str, list[str]]:
+        """获取所有电影的标签映射"""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.execute("SELECT movie_path, tag FROM tags")
+            result: dict[str, list[str]] = {}
+            for row in cursor.fetchall():
+                movie_path, tag = row[0], row[1]
+                if movie_path not in result:
+                    result[movie_path] = []
+                result[movie_path].append(tag)
+            return result
+
     def save_profile(self, profile: dict[str, Any]) -> None:
         """保存用户配置文件"""
         with sqlite3.connect(self.db_path) as conn:
