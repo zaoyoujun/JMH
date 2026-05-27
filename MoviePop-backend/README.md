@@ -98,6 +98,28 @@ port = 8765
 nginx_port = 8088
 ```
 
+## MPV 上一集/下一集切换功能
+
+MoviePop 提供 mpv 播放器上一集/下一集快捷切换功能。
+
+### 功能说明
+
+- 按 `>` 键切换到下一集
+- 按 `<` 键切换到上一集
+- 支持剧集列表缓存，切换更快速
+- 新集从头播放，不继承上一集进度
+
+### 相关文件
+
+- `data/mpv-profile/scripts/episode_switcher.lua` - Lua 脚本处理切换逻辑
+- `data/mpv-profile/input.conf` - 键盘快捷键绑定
+- `data/mpv-profile/script-opts/uosc.conf` - 控制栏按钮配置
+
+### 使用条件
+
+- 使用内嵌播放器模式播放剧集时功能可用
+- 需要后端 API `/api/movies/item` 正常工作
+
 ## API 文档
 
 启动服务后访问：
