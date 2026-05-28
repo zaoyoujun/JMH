@@ -794,7 +794,21 @@ class LibraryService:
         if not movie:
             raise ValueError("未找到对应的视频条目")
         
-        self.cache.save_playback_progress(movie_path, progress, duration, episode_index=episode_index)
+        # 确保视频已在数据库中
+        from utils.database import VideoCache
+        cache = VideoCache()
+        
+        # 先检查视频是否在缓存中，如果不在则添加
+        videos = cache.load_cache()
+        video_paths = [v.get("path", "") for v in videos]
+        if movie_path not in video_paths:
+            # 尝试添加视频到缓存
+            cache.save_cache([movie])
+        
+        success = self.cache.save_playback_progress(movie_path, progress, duration, episode_index=episode_index)
+        if not success:
+            raise ValueError("保存播放进度失败")
+        
         return {"success": True, "movie": movie}
 
     def get_playback_progress(self, movie_path: str) -> dict[str, Any]:
@@ -1838,6 +1852,10 @@ class PlaybackService:
             time.sleep(0.3)
 
         if pipe_ready:
+            try:
+                self._mpv_send_command(pipe_path, ["set_property", "start", "0"])
+            except Exception:
+                logger.debug("reset start property failed", exc_info=True)
             try:
                 status = self._fetch_mpv_status(session)
                 if status:

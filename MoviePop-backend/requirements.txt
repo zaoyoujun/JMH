@@ -8,3 +8,4 @@ uvicorn==0.42.0
 pywebview==6.2.1
 clickhouse-connect==0.8.18
 pyecharts==2.0.8
+

@@ -41,21 +41,41 @@ end
 load_cache()
 
 local function url_encode(s)
+    if not s then return "" end
     return s:gsub("[^a-zA-Z0-9]", function(c) return string.format("%%%02X", string.byte(c)) end)
 end
 
 local function url_decode(s)
+    if not s then return "" end
     s = s:gsub("+", " ")
-    s = s:gsub("%%(%x%x)", function(h) return string.char(tonumber(h, 16)) end)
+    s = s:gsub("%%(%x%x)", function(h) 
+        local num = tonumber(h, 16)
+        if num then
+            return string.char(num)
+        else
+            return "%" .. h
+        end
+    end)
     return s
 end
 
 local function get_local_path_from_url(url)
-    if not url then return nil end
+    if not url then 
+        mp.msg.error("URL is nil")
+        return nil 
+    end
+    
+    mp.msg.debug("parsing URL: " .. url)
+    
     local movie_path = url:match("movie_path=([^&]+)")
     if movie_path then
-        return url_decode(movie_path)
+        mp.msg.debug("extracted movie_path (encoded): " .. movie_path)
+        local decoded = url_decode(movie_path)
+        mp.msg.debug("decoded movie_path: " .. decoded)
+        return decoded
     end
+    
+    mp.msg.error("movie_path parameter not found in URL")
     return nil
 end
 
@@ -84,58 +104,80 @@ end
 local function get_episode_files(movie_path)
     if not movie_path then
         mp.msg.info("movie_path is nil")
-        return {}
+        return {}, nil
     end
 
-    local encoded_path = url_encode(movie_path)
-    local url = "http://127.0.0.1:8765/api/movies/item?movie_path=" .. encoded_path
-    mp.msg.info("API request path: " .. encoded_path)
+    local function fetch_from_api(path_to_query)
+        local encoded_path = url_encode(path_to_query)
+        local url = "http://127.0.0.1:8765/api/movies/item?movie_path=" .. encoded_path
+        mp.msg.info("API request path: " .. encoded_path)
 
-    local cmd = {"curl", "-s", url}
-    local result = utils.subprocess({args = cmd, cancellable = false})
+        local cmd = {"curl", "-s", url}
+        local result = utils.subprocess({args = cmd, cancellable = false})
 
-    if not result.error and result.status == 0 then
-        mp.msg.info("API response length: " .. #result.stdout)
+        if not result.error and result.status == 0 then
+            mp.msg.info("API response length: " .. #result.stdout)
 
-        local success, data = pcall(utils.parse_json, result.stdout)
-        if success and data then
-            mp.msg.info("JSON parsed successfully")
-            
-            if data.movie then
-                mp.msg.info("Found movie object")
+            local success, data = pcall(utils.parse_json, result.stdout)
+            if success and data then
+                mp.msg.info("JSON parsed successfully")
                 
-                if data.movie.is_series then
-                    mp.msg.info("is_series: true")
+                if data.movie then
+                    mp.msg.info("Found movie object")
                     
-                    if data.movie.episode_files and type(data.movie.episode_files) == "table" then
-                        local episode_files = {}
-                        for i, path in ipairs(data.movie.episode_files) do
-                            mp.msg.info("episode[" .. i .. "]: " .. path)
-                            table.insert(episode_files, path)
+                    local remote_provider = data.movie.remote_provider or data.movie.provider or ""
+                    mp.msg.info("remote_provider: " .. remote_provider)
+                    
+                    if data.movie.is_series then
+                        mp.msg.info("is_series: true")
+                        
+                        if data.movie.episode_files and type(data.movie.episode_files) == "table" then
+                            local episode_files = {}
+                            for i, path in ipairs(data.movie.episode_files) do
+                                mp.msg.info("episode[" .. i .. "]: " .. path)
+                                table.insert(episode_files, path)
+                            end
+                            mp.msg.info("found " .. #episode_files .. " episode files")
+                            return episode_files, remote_provider
+                        else
+                            mp.msg.info("episode_files is nil or not an array")
                         end
-                        mp.msg.info("found " .. #episode_files .. " episode files")
-                        return episode_files
                     else
-                        mp.msg.info("episode_files is nil or not an array")
+                        mp.msg.info("is_series: false")
                     end
                 else
-                    mp.msg.info("is_series: false")
+                    mp.msg.info("no movie object found in response")
                 end
             else
-                mp.msg.info("no movie object found in response")
+                mp.msg.error("Failed to parse JSON: " .. tostring(data))
+                mp.msg.info("Raw response: " .. string.sub(result.stdout, 1, 300))
             end
         else
-            mp.msg.error("Failed to parse JSON: " .. tostring(data))
-            mp.msg.info("Raw response: " .. string.sub(result.stdout, 1, 300))
+            mp.msg.error("API call failed: " .. tostring(result.error) .. " status: " .. tostring(result.status))
         end
-        return {}
-    else
-        mp.msg.error("API call failed: " .. tostring(result.error) .. " status: " .. tostring(result.status))
-        return {}
+        return nil, nil
     end
+
+    mp.msg.info("Trying to find episode files using original path: " .. movie_path)
+    local episode_files, remote_provider = fetch_from_api(movie_path)
+    if episode_files and #episode_files > 0 then
+        return episode_files, remote_provider
+    end
+
+    local dir_path = get_directory_path(movie_path)
+    if dir_path then
+        mp.msg.info("Original path not found, trying directory path: " .. dir_path)
+        episode_files, remote_provider = fetch_from_api(dir_path)
+        if episode_files and #episode_files > 0 then
+            return episode_files, remote_provider
+        end
+    end
+
+    mp.msg.info("No episode files found")
+    return {}, nil
 end
 
-local function build_stream_url(file_path)
+local function build_stream_url(file_path, provider)
     local dir, filename = utils.split_path(file_path)
     if not filename then
         filename = file_path:match("[^/\\]*$")
@@ -145,7 +187,14 @@ local function build_stream_url(file_path)
     end
     local encoded_filename = url_encode(filename)
     local encoded_path = url_encode(file_path)
-    return "http://127.0.0.1:8765/api/stream/media/" .. encoded_filename .. "?movie_path=" .. encoded_path .. "&provider=openlist"
+    local provider_param = provider and provider ~= "" and "&provider=" .. url_encode(provider) or ""
+    
+    local url = "http://127.0.0.1:8765/api/stream/media/" .. encoded_filename .. "?movie_path=" .. encoded_path .. provider_param
+    mp.msg.debug("build_stream_url: " .. url)
+    mp.msg.debug("  file_path: " .. file_path)
+    mp.msg.debug("  provider: " .. tostring(provider))
+    
+    return url
 end
 
 local function switch_to_episode(local_path, direction)
@@ -155,20 +204,24 @@ local function switch_to_episode(local_path, direction)
     mp.msg.info("directory path: " .. tostring(dir_path))
 
     local episode_files = nil
+    local remote_provider = nil
 
     if dir_path and episode_cache[dir_path] then
         mp.msg.info("Using cached episode list for directory: " .. dir_path)
-        episode_files = episode_cache[dir_path]
+        episode_files = episode_cache[dir_path].files
+        remote_provider = episode_cache[dir_path].provider
+        mp.msg.info("Cached provider: " .. tostring(remote_provider))
     else
-        episode_files = get_episode_files(local_path)
+        episode_files, remote_provider = get_episode_files(local_path)
         if dir_path and #episode_files > 0 then
-            episode_cache[dir_path] = episode_files
+            episode_cache[dir_path] = {files = episode_files, provider = remote_provider}
             mp.msg.info("Cached episode list for directory: " .. dir_path)
             save_cache()
         end
     end
 
     mp.msg.info("got " .. #episode_files .. " episode files")
+    mp.msg.info("remote_provider: " .. tostring(remote_provider))
 
     if #episode_files == 0 then
         mp.osd_message("无法获取剧集列表", 2)
@@ -194,10 +247,14 @@ local function switch_to_episode(local_path, direction)
 
     if not current_index then
         mp.msg.info("current path not found in episode list, trying partial match")
+        local local_filename = local_path:match("[^/\\]+$")
+        mp.msg.info("local_filename: " .. tostring(local_filename))
         for i, f in ipairs(episode_files) do
-            if f:find(local_path:match("[^/\\]+$")) then
+            local episode_filename = f:match("[^/\\]+$")
+            mp.msg.info("comparing filenames: " .. tostring(episode_filename) .. " vs " .. tostring(local_filename))
+            if episode_filename == local_filename then
                 current_index = i
-                mp.msg.info("found partial match at index " .. i)
+                mp.msg.info("found filename match at index " .. i)
                 break
             end
         end
@@ -217,14 +274,14 @@ local function switch_to_episode(local_path, direction)
 
     if direction == 1 and current_index < #episode_files then
         local next_file = episode_files[current_index + 1]
-        local next_url = build_stream_url(next_file)
+        local next_url = build_stream_url(next_file, remote_provider)
         mp.msg.info("loading next: " .. next_file)
         mp.msg.info("stream url: " .. next_url)
         mp.osd_message("下一集: " .. next_file:match("([^/\\]+)$"), 2)
         switch_episode(next_file, next_url)
     elseif direction == -1 and current_index > 1 then
         local prev_file = episode_files[current_index - 1]
-        local prev_url = build_stream_url(prev_file)
+        local prev_url = build_stream_url(prev_file, remote_provider)
         mp.msg.info("loading prev: " .. prev_file)
         mp.msg.info("stream url: " .. prev_url)
         mp.osd_message("上一集: " .. prev_file:match("([^/\\]+)$"), 2)
@@ -240,28 +297,44 @@ end
 
 mp.register_script_message("next-episode", function()
     local url = mp.get_property("path")
-    local local_path = get_local_path_from_url(url)
     mp.msg.info("=== next-episode triggered ===")
     mp.msg.info("url: " .. tostring(url))
-    mp.msg.info("local_path: " .. tostring(local_path))
-    if local_path then
+    
+    if not url or url == "" then
+        mp.msg.error("mpv path property is empty")
+        mp.osd_message("播放路径为空", 2)
+        return
+    end
+    
+    local local_path = get_local_path_from_url(url)
+    mp.msg.info("extracted local_path: " .. tostring(local_path))
+    
+    if local_path and local_path ~= "" then
         switch_to_episode(local_path, 1)
     else
-        mp.msg.error("Failed to extract local path from URL")
+        mp.msg.error("Failed to extract local path from URL: " .. tostring(url))
         mp.osd_message("无法获取本地路径", 2)
     end
 end)
 
 mp.register_script_message("prev-episode", function()
     local url = mp.get_property("path")
-    local local_path = get_local_path_from_url(url)
     mp.msg.info("=== prev-episode triggered ===")
     mp.msg.info("url: " .. tostring(url))
-    mp.msg.info("local_path: " .. tostring(local_path))
-    if local_path then
+    
+    if not url or url == "" then
+        mp.msg.error("mpv path property is empty")
+        mp.osd_message("播放路径为空", 2)
+        return
+    end
+    
+    local local_path = get_local_path_from_url(url)
+    mp.msg.info("extracted local_path: " .. tostring(local_path))
+    
+    if local_path and local_path ~= "" then
         switch_to_episode(local_path, -1)
     else
-        mp.msg.error("Failed to extract local path from URL")
+        mp.msg.error("Failed to extract local path from URL: " .. tostring(url))
         mp.osd_message("无法获取本地路径", 2)
     end
 end)
