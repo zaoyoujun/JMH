@@ -1,45 +1,97 @@
-from __future__ import annotations
-
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, Dict, List, Optional
 
 from config.app_config import AppConfig
-from utils.sqlite_storage import (
-    SQLiteStorage,
-    VideoDAO,
-    FavoriteDAO,
-    PlaybackDAO,
-    TagDAO,
-    RecentPlayDAO,
-    ConfigDAO,
-    FeedbackDAO,
-    ProfileDAO,
-    RecommendationDAO
-)
+from utils.logger import get_logger
+
+logger = get_logger()
 
 
-class VideoCache:
-    """
-    视频缓存管理器 - 基于SQLite的统一数据存储适配器
-    保持与原有API的向后兼容性
-    """
-    
+class VideoCacheBase:
+    def save_cache(self, video_list: List[Dict[str, Any]]) -> bool:
+        raise NotImplementedError
+
+    def load_cache(self) -> Optional[List[Dict[str, Any]]]:
+        raise NotImplementedError
+
+    def update_video_cover(self, video_path: str, cover_path: str) -> None:
+        raise NotImplementedError
+
+    def clear_cache(self) -> None:
+        raise NotImplementedError
+
+    def add_favorite(self, movie_data: Dict[str, Any]) -> None:
+        raise NotImplementedError
+
+    def remove_favorite(self, movie_path: str) -> None:
+        raise NotImplementedError
+
+    def get_favorites(self) -> List[Dict[str, Any]]:
+        raise NotImplementedError
+
+    def is_favorite(self, movie_path: str) -> bool:
+        raise NotImplementedError
+
+    def add_recent_play(self, movie_data: Dict[str, Any]) -> None:
+        raise NotImplementedError
+
+    def get_recent_play(self) -> List[Dict[str, Any]]:
+        raise NotImplementedError
+
+    def clear_recent_play(self) -> None:
+        raise NotImplementedError
+
+    def save_custom_info(self, movie_path: str, custom_data: Dict[str, Any]) -> None:
+        raise NotImplementedError
+
+    def get_custom_info(self, movie_path: str) -> Dict[str, Any]:
+        raise NotImplementedError
+
+    def get_all_custom_info(self) -> Dict[str, Dict[str, Any]]:
+        raise NotImplementedError
+
+    def update_movie(self, movie_data: Dict[str, Any]) -> bool:
+        raise NotImplementedError
+
+    def get_all_tags(self) -> Dict[str, int]:
+        raise NotImplementedError
+
+    def get_movie_tags(self, movie_path: str) -> List[str]:
+        raise NotImplementedError
+
+    def add_movie_tag(self, movie_path: str, tag: str) -> None:
+        raise NotImplementedError
+
+    def remove_movie_tag(self, movie_path: str, tag: str) -> None:
+        raise NotImplementedError
+
+    def get_movies_by_tag(self, tag: str) -> List[str]:
+        raise NotImplementedError
+
+    def save_playback_progress(self, movie_path: str, progress: int, duration: int, episode_index: int = None) -> None:
+        raise NotImplementedError
+
+    def get_playback_progress(self, movie_path: str) -> Dict[str, Any]:
+        raise NotImplementedError
+
+    def get_all_playback_progress(self) -> Dict[str, Dict[str, Any]]:
+        raise NotImplementedError
+
+    def clear_playback_progress(self, movie_path: str = None) -> None:
+        raise NotImplementedError
+
+
+class VideoCacheJson(VideoCacheBase):
     def __init__(self):
         self.config = AppConfig()
-        self.storage = SQLiteStorage()
-        
-        # 初始化各个数据访问对象
-        self.video_dao = VideoDAO(self.storage)
-        self.favorite_dao = FavoriteDAO(self.storage)
-        self.playback_dao = PlaybackDAO(self.storage)
-        self.tag_dao = TagDAO(self.storage)
-        self.recent_dao = RecentPlayDAO(self.storage)
-        self.config_dao = ConfigDAO(self.storage)
-        self.feedback_dao = FeedbackDAO(self.storage)
-        self.profile_dao = ProfileDAO(self.storage)
-        self.recommendation_dao = RecommendationDAO(self.storage)
-    
+        self.cache_file = self.config.DATA_DIR / "video_cache.json"
+        self.favorite_file = self.config.DATA_DIR / "favorite.json"
+        self.recent_file = self.config.DATA_DIR / "recent_play.json"
+        self.custom_info_file = self.config.DATA_DIR / "custom_movie_info.json"
+        self.tags_file = self.config.DATA_DIR / "movie_tags.json"
+        self.playback_file = self.config.DATA_DIR / "playback_progress.json"
+
     def _is_valid_video_list(self, data):
         if not isinstance(data, list):
             return False
@@ -49,337 +101,539 @@ class VideoCache:
             if "path" not in item or "title" not in item:
                 return False
         return True
-    
+
     def save_cache(self, video_list):
-        """保存视频缓存"""
         try:
-            webdav_host = self.config.WEBDAV_HOST
-            
+            cache_data = {
+                "webdav_host": self.config.WEBDAV_HOST,
+                "version": 2,
+                "videos": []
+            }
             for video in video_list:
                 if not isinstance(video, dict):
                     continue
-                
-                # 确保字典值不包含None
-                video_copy = {}
-                for k, v in video.items():
-                    # SQLite不能存储None，需要转换
-                    if v is None:
-                        if isinstance(v, str):
-                            video_copy[k] = ""
-                        elif isinstance(v, int):
-                            video_copy[k] = 0
-                        elif isinstance(v, float):
-                            video_copy[k] = 0.0
-                        else:
-                            video_copy[k] = ""
-                    else:
-                        # 复杂类型转JSON字符串
-                        if isinstance(v, (dict, list)):
-                            video_copy[k] = json.dumps(v)
-                        else:
-                            video_copy[k] = v
-                
-                video_copy['webdav_host'] = webdav_host
-                self.video_dao.insert_video(video_copy)
-            
-            # 保存webdav_host到配置
-            self.config_dao.set_config('webdav_host', webdav_host)
-            self.config_dao.set_config('cache_version', 2)
-            
+                cache_item = {
+                    "title": video.get("title", ""),
+                    "name": video.get("name", ""),
+                    "type": video.get("type", "视频"),
+                    "year": video.get("year", 2024),
+                    "duration": video.get("duration", "未知"),
+                    "director": video.get("director", "未知"),
+                    "actors": video.get("actors", "未知"),
+                    "intro": video.get("intro", ""),
+                    "is_series": video.get("is_series", False),
+                    "episodes": video.get("episodes", []),
+                    "episode_files": video.get("episode_files", []),
+                    "path": video.get("path", ""),
+                    "cover_path": video.get("cover_path", ""),
+                    "series_title": video.get("series_title", ""),
+                    "season_title": video.get("season_title", ""),
+                    "special_type": video.get("special_type", ""),
+                    "part": video.get("part", 0),
+                    "season": video.get("season", 0),
+                    "category": video.get("category", ""),
+                    "franchise": video.get("franchise", ""),
+                    "sort_bucket": video.get("sort_bucket", 9),
+                    "sort_title": video.get("sort_title", ""),
+                    "year_hint": video.get("year_hint", 0),
+                    "rating": video.get("rating", 0.0),
+                    "remote_provider": video.get("remote_provider", ""),
+                    "source_label": video.get("source_label", ""),
+                    "resolution": video.get("resolution", ""),
+                    "video_codec": video.get("video_codec", ""),
+                    "audio_info": video.get("audio_info", ""),
+                    "subtitle_info": video.get("subtitle_info", ""),
+                    "release_group": video.get("release_group", ""),
+                    "cover_url": video.get("cover_url", ""),
+                    "last_play_time": video.get("last_play_time", ""),
+                    "is_favorite": video.get("is_favorite", False),
+                    "tags": video.get("tags", []),
+                    "inferred_tags": video.get("inferred_tags", []),
+                    "manual_tags": video.get("manual_tags", []),
+                    "playback": video.get("playback", {}),
+                    "episode_count": video.get("episode_count", 0),
+                }
+                cache_data["videos"].append(cache_item)
+
+            with open(self.cache_file, "w", encoding="utf-8") as f:
+                json.dump(cache_data, f, ensure_ascii=False, indent=2)
             return True
         except Exception as e:
-            print(f"保存缓存失败: {e}")
+            logger.error(f"保存缓存失败: {e}")
             return False
-    
+
     def load_cache(self):
-        """加载视频缓存"""
-        try:
-            cached_host = self.config_dao.get_config('webdav_host', '')
-            
-            if cached_host != self.config.WEBDAV_HOST:
-                print("缓存服务器不匹配，跳过")
-                return None
-            
-            videos = self.video_dao.get_all_videos()
-            
-            # 解析JSON字段
-            for video in videos:
-                for field in ['episodes', 'episode_files', 'tags', 'inferred_tags', 'manual_tags', 'playback']:
-                    if field in video and video[field]:
-                        try:
-                            video[field] = json.loads(video[field])
-                        except json.JSONDecodeError:
-                            video[field] = [] if field in ['episodes', 'episode_files', 'tags', 'inferred_tags', 'manual_tags'] else {}
-            
-            print(f"成功加载缓存，共 {len(videos)} 个视频")
-            return videos
-        
-        except Exception as e:
-            print(f"加载缓存失败: {e}")
+        if not self.cache_file.exists():
             return None
-    
+        try:
+            with open(self.cache_file, "r", encoding="utf-8") as f:
+                cache_data = json.load(f)
+
+            if not isinstance(cache_data, dict):
+                raise ValueError("缓存格式错误")
+
+            if cache_data.get("webdav_host") != self.config.WEBDAV_HOST:
+                logger.info("缓存服务器不匹配，跳过")
+                return None
+
+            video_list = cache_data.get("videos", [])
+            if not self._is_valid_video_list(video_list):
+                raise ValueError("视频列表格式错误")
+
+            custom_info = self.get_all_custom_info()
+            for video in video_list:
+                if video.get("path") in custom_info:
+                    video.update(custom_info[video["path"]])
+
+            logger.info(f"成功加载缓存，共 {len(video_list)} 个视频")
+            return video_list
+
+        except Exception as e:
+            logger.error(f"加载缓存失败: {e}，自动清除旧缓存")
+            self.clear_cache()
+            return None
+
     def update_video_cover(self, video_path, cover_path):
-        """更新视频封面"""
-        self.video_dao.update_video(video_path, {'cover_path': cover_path})
-    
+        cache_data = self.load_cache()
+        if not cache_data:
+            return
+        for video in cache_data:
+            if video.get("path") == video_path:
+                video["cover_path"] = cover_path
+                break
+        self.save_cache(cache_data)
+
     def clear_cache(self):
-        """清除缓存"""
-        try:
-            # 删除所有视频记录
-            self.storage.execute("DELETE FROM videos")
-            self.storage.execute("DELETE FROM favorites")
-            self.storage.execute("DELETE FROM playback_progress")
-            self.storage.execute("DELETE FROM video_tags")
-            self.storage.execute("DELETE FROM recent_play")
-            print("缓存已清除")
-        except Exception as e:
-            print(f"清除缓存失败: {e}")
-    
+        if self.cache_file.exists():
+            try:
+                self.cache_file.unlink()
+                logger.info("旧缓存已清除")
+            except:
+                pass
+
     def add_favorite(self, movie_data):
-        """添加收藏"""
         try:
-            movie_path = movie_data.get("path")
-            if not movie_path:
-                return
-            
-            # 先确保视频存在
-            existing = self.video_dao.get_video_by_path(movie_path)
-            if not existing:
-                self.video_dao.insert_video(movie_data)
-            
-            self.favorite_dao.add_favorite(movie_path)
+            favorites = self.get_favorites()
+            for item in favorites:
+                if item.get("path") == movie_data.get("path"):
+                    return
+            favorites.append(movie_data)
+            with open(self.favorite_file, "w", encoding="utf-8") as f:
+                json.dump(favorites, f, ensure_ascii=False, indent=2)
         except Exception as e:
-            print(f"添加收藏失败: {e}")
-    
+            logger.error(f"添加收藏失败: {e}")
+
     def remove_favorite(self, movie_path):
-        """移除收藏"""
         try:
-            self.favorite_dao.remove_favorite(movie_path)
+            favorites = self.get_favorites()
+            favorites = [item for item in favorites if item.get("path") != movie_path]
+            with open(self.favorite_file, "w", encoding="utf-8") as f:
+                json.dump(favorites, f, ensure_ascii=False, indent=2)
         except Exception as e:
-            print(f"取消收藏失败: {e}")
-    
+            logger.error(f"取消收藏失败: {e}")
+
     def get_favorites(self):
-        """获取收藏列表"""
-        try:
-            favorites = self.favorite_dao.get_favorites()
-            # 解析JSON字段
-            for video in favorites:
-                for field in ['episodes', 'episode_files', 'tags', 'inferred_tags', 'manual_tags', 'playback']:
-                    if field in video and video[field]:
-                        try:
-                            video[field] = json.loads(video[field])
-                        except json.JSONDecodeError:
-                            video[field] = [] if field in ['episodes', 'episode_files', 'tags', 'inferred_tags', 'manual_tags'] else {}
-            return favorites
-        except Exception as e:
-            print(f"获取收藏失败: {e}")
+        if not self.favorite_file.exists():
             return []
-    
+        try:
+            with open(self.favorite_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                if isinstance(data, list):
+                    return data
+        except:
+            pass
+        return []
+
     def is_favorite(self, movie_path):
-        """检查是否已收藏"""
-        return self.favorite_dao.is_favorite(movie_path)
-    
+        favorites = self.get_favorites()
+        for item in favorites:
+            if item.get("path") == movie_path:
+                return True
+        return False
+
     def add_recent_play(self, movie_data):
-        """添加最近播放"""
         try:
-            movie_path = movie_data.get("path")
-            if not movie_path:
-                return
-            
-            # 先确保视频存在
-            existing = self.video_dao.get_video_by_path(movie_path)
-            if not existing:
-                self.video_dao.insert_video(movie_data)
-            
-            self.recent_dao.add_recent_play(movie_path)
+            recent = self.get_recent_play()
+            recent = [item for item in recent if item.get("path") != movie_data.get("path")]
+            recent.insert(0, movie_data)
+            recent = recent[:100]
+            with open(self.recent_file, "w", encoding="utf-8") as f:
+                json.dump(recent, f, ensure_ascii=False, indent=2)
         except Exception as e:
-            print(f"添加最近播放失败: {e}")
-    
+            logger.error(f"添加最近播放失败: {e}")
+
     def get_recent_play(self):
-        """获取最近播放列表"""
-        try:
-            recent = self.recent_dao.get_recent_play(limit=100)
-            # 解析JSON字段
-            for video in recent:
-                for field in ['episodes', 'episode_files', 'tags', 'inferred_tags', 'manual_tags', 'playback']:
-                    if field in video and video[field]:
-                        try:
-                            video[field] = json.loads(video[field])
-                        except json.JSONDecodeError:
-                            video[field] = [] if field in ['episodes', 'episode_files', 'tags', 'inferred_tags', 'manual_tags'] else {}
-            return recent
-        except Exception as e:
-            print(f"获取最近播放失败: {e}")
+        if not self.recent_file.exists():
             return []
-    
+        try:
+            with open(self.recent_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                if isinstance(data, list):
+                    return data
+        except:
+            pass
+        return []
+
     def clear_recent_play(self):
-        """清除最近播放"""
         try:
-            self.recent_dao.clear_recent_play()
+            if self.recent_file.exists():
+                self.recent_file.unlink()
         except Exception as e:
-            print(f"清除最近播放失败: {e}")
-    
+            logger.error(f"清除最近播放失败: {e}")
+
     def save_custom_info(self, movie_path, custom_data):
-        """保存自定义信息"""
         try:
-            # 获取现有信息
-            existing = self.video_dao.get_video_by_path(movie_path)
-            if existing:
-                # 合并自定义数据
-                update_data = {}
-                for k, v in custom_data.items():
-                    if isinstance(v, (dict, list)):
-                        update_data[k] = json.dumps(v)
-                    else:
-                        update_data[k] = v
-                self.video_dao.update_video(movie_path, update_data)
+            all_info = self.get_all_custom_info()
+            all_info[movie_path] = custom_data
+            with open(self.custom_info_file, "w", encoding="utf-8") as f:
+                json.dump(all_info, f, ensure_ascii=False, indent=2)
         except Exception as e:
-            print(f"保存自定义信息失败: {e}")
-    
+            logger.error(f"保存自定义信息失败: {e}")
+
     def get_custom_info(self, movie_path):
-        """获取自定义信息"""
-        video = self.video_dao.get_video_by_path(movie_path)
-        if video:
-            return video
-        return {}
-    
+        all_info = self.get_all_custom_info()
+        return all_info.get(movie_path, {})
+
     def get_all_custom_info(self):
-        """获取所有自定义信息"""
-        videos = self.video_dao.get_all_videos()
-        result = {}
-        for video in videos:
-            result[video.get('path', '')] = video
-        return result
-    
-    def update_movie(self, movie_data):
-        """更新视频信息"""
+        if not self.custom_info_file.exists():
+            return {}
         try:
+            with open(self.custom_info_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                if isinstance(data, dict):
+                    return data
+        except:
+            pass
+        return {}
+
+    def update_movie(self, movie_data):
+        try:
+            cache_data = self.load_cache()
+            if not cache_data:
+                return False
+
             target_path = movie_data.get("path")
             if not target_path:
                 return False
-            
-            update_data = {}
-            for k, v in movie_data.items():
-                if v is None:
-                    continue
-                if isinstance(v, (dict, list)):
-                    update_data[k] = json.dumps(v)
-                else:
-                    update_data[k] = v
-            
-            if update_data:
-                self.video_dao.update_video(target_path, update_data)
+
+            updated = False
+            for video in cache_data:
+                if video.get("path") == target_path:
+                    video.update(movie_data)
+                    updated = True
+                    break
+
+            if updated:
+                self.save_cache(cache_data)
                 return True
             return False
         except Exception as e:
-            print(f"更新视频信息失败: {e}")
+            logger.error(f"更新视频信息失败: {e}")
             return False
-    
+
     def get_all_tags(self):
-        """获取所有标签"""
-        try:
-            tags = self.tag_dao.get_all_tags()
-            result = {}
-            for tag in tags:
-                # 获取标签关联的视频数量
-                count = len(self.tag_dao.get_movies_by_tag(tag['name']))
-                result[tag['name']] = count
-            return result
-        except Exception as e:
-            print(f"获取标签失败: {e}")
+        if not self.tags_file.exists():
             return {}
-    
-    def get_movie_tags(self, movie_path):
-        """获取电影标签"""
-        return self.tag_dao.get_video_tags(movie_path)
-    
-    def add_movie_tag(self, movie_path, tag):
-        """添加电影标签"""
         try:
-            self.tag_dao.add_video_tag(movie_path, tag)
-        except Exception as e:
-            print(f"添加标签失败: {e}")
-    
-    def remove_movie_tag(self, movie_path, tag):
-        """移除电影标签"""
-        try:
-            self.tag_dao.remove_video_tag(movie_path, tag)
-        except Exception as e:
-            print(f"移除标签失败: {e}")
-    
-    def get_movies_by_tag(self, tag):
-        """获取具有指定标签的电影"""
-        try:
-            movies = self.tag_dao.get_movies_by_tag(tag)
-            for movie in movies:
-                for field in ['episodes', 'episode_files', 'tags', 'inferred_tags', 'manual_tags', 'playback']:
-                    if field in movie and movie[field]:
-                        try:
-                            movie[field] = json.loads(movie[field])
-                        except json.JSONDecodeError:
-                            movie[field] = [] if field in ['episodes', 'episode_files', 'tags', 'inferred_tags', 'manual_tags'] else {}
-            return [m['path'] for m in movies]
-        except Exception as e:
-            print(f"获取标签电影失败: {e}")
-            return []
-    
-    def save_playback_progress(self, movie_path, progress, duration, episode_index=None):
-        """保存播放进度"""
-        try:
-            self.playback_dao.save_progress(movie_path, progress, duration, episode_index or 0)
-        except Exception as e:
-            print(f"保存播放进度失败: {e}")
-    
-    def get_playback_progress(self, movie_path):
-        """获取播放进度"""
-        progress = self.playback_dao.get_progress(movie_path)
-        if progress:
-            return {
-                'progress': progress.get('progress', 0),
-                'duration': progress.get('duration', 0),
-                'episode_index': progress.get('episode_index', 0),
-                'timestamp': progress.get('timestamp', 0)
-            }
+            with open(self.tags_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                if isinstance(data, dict):
+                    return data
+        except:
+            pass
         return {}
-    
-    def get_all_playback_progress(self):
-        """获取所有播放进度"""
-        progress_list = self.playback_dao.get_all_progress()
-        result = {}
-        for p in progress_list:
-            result[p['video_path']] = {
-                'progress': p.get('progress', 0),
-                'duration': p.get('duration', 0),
-                'episode_index': p.get('episode_index', 0),
-                'timestamp': p.get('timestamp', 0)
-            }
-        return result
-    
-    def clear_playback_progress(self, movie_path=None):
-        """清除播放进度"""
+
+    def get_movie_tags(self, movie_path):
+        all_tags = self.get_all_tags()
+        movie_tags = []
+        for tag, movies in all_tags.items():
+            if isinstance(movies, list) and movie_path in movies:
+                movie_tags.append(tag)
+        return movie_tags
+
+    def add_movie_tag(self, movie_path, tag):
         try:
-            self.playback_dao.clear_progress(movie_path)
+            all_tags = self.get_all_tags()
+            if tag not in all_tags:
+                all_tags[tag] = []
+            if movie_path not in all_tags[tag]:
+                all_tags[tag].append(movie_path)
+            with open(self.tags_file, "w", encoding="utf-8") as f:
+                json.dump(all_tags, f, ensure_ascii=False, indent=2)
         except Exception as e:
-            print(f"清除播放进度失败: {e}")
-    
+            logger.error(f"添加标签失败: {e}")
+
+    def remove_movie_tag(self, movie_path, tag):
+        try:
+            all_tags = self.get_all_tags()
+            if tag in all_tags and movie_path in all_tags[tag]:
+                all_tags[tag].remove(movie_path)
+                if not all_tags[tag]:
+                    del all_tags[tag]
+            with open(self.tags_file, "w", encoding="utf-8") as f:
+                json.dump(all_tags, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            logger.error(f"移除标签失败: {e}")
+
+    def get_movies_by_tag(self, tag):
+        all_tags = self.get_all_tags()
+        return all_tags.get(tag, [])
+
+    def save_playback_progress(self, movie_path, progress, duration, episode_index=None):
+        try:
+            playback_data = self.get_all_playback_progress()
+            playback_data[movie_path] = {
+                "progress": progress,
+                "duration": duration,
+                "episode_index": int(episode_index or 0),
+                "timestamp": self._get_timestamp()
+            }
+            with open(self.playback_file, "w", encoding="utf-8") as f:
+                json.dump(playback_data, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            logger.error(f"保存播放进度失败: {e}")
+
+    def get_playback_progress(self, movie_path):
+        playback_data = self.get_all_playback_progress()
+        return playback_data.get(movie_path, {})
+
+    def get_all_playback_progress(self):
+        if not self.playback_file.exists():
+            return {}
+        try:
+            with open(self.playback_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                if isinstance(data, dict):
+                    return data
+        except:
+            pass
+        return {}
+
+    def clear_playback_progress(self, movie_path=None):
+        try:
+            if movie_path:
+                playback_data = self.get_all_playback_progress()
+                if movie_path in playback_data:
+                    del playback_data[movie_path]
+                with open(self.playback_file, "w", encoding="utf-8") as f:
+                    json.dump(playback_data, f, ensure_ascii=False, indent=2)
+            else:
+                if self.playback_file.exists():
+                    self.playback_file.unlink()
+        except Exception as e:
+            logger.error(f"清除播放进度失败: {e}")
+
     def _get_timestamp(self):
-        """获取时间戳"""
         import time
         return int(time.time())
-    
-    # 备份与恢复方法
-    def backup_database(self, backup_path=None):
-        """备份数据库"""
-        return self.storage.backup(backup_path)
-    
-    def restore_database(self, backup_path):
-        """恢复数据库"""
-        return self.storage.restore(backup_path)
-    
-    def optimize_database(self):
-        """优化数据库"""
-        self.storage.vacuum()
-    
-    def get_database_size(self):
-        """获取数据库大小"""
-        return self.storage.get_db_size()
+
+
+class VideoCacheSQLite(VideoCacheBase):
+    _instance = None
+
+    def __new__(cls, *args, **kwargs):
+        if not cls._instance:
+            cls._instance = super().__new__(cls, *args, **kwargs)
+        return cls._instance
+
+    def __init__(self):
+        if hasattr(self, '_initialized') and self._initialized:
+            return
+        from utils.sqlite_dao import SQLiteVideoCache
+        self.cache = SQLiteVideoCache()
+        self._initialized = True
+
+    @classmethod
+    def reset(cls):
+        """Reset the cache instance and close database connection."""
+        from utils.sqlite_connection import get_sqlite_connection
+        conn = get_sqlite_connection()
+        conn.reset()
+        cls._instance = None
+        logger.info("VideoCacheSQLite reset completed")
+
+    def save_cache(self, video_list: List[Dict[str, Any]]) -> bool:
+        return self.cache.save_cache(video_list)
+
+    def load_cache(self) -> Optional[List[Dict[str, Any]]]:
+        return self.cache.load_cache()
+
+    def update_video_cover(self, video_path: str, cover_path: str) -> None:
+        self.cache.update_video_cover(video_path, cover_path)
+
+    def clear_cache(self) -> None:
+        self.cache.clear_cache()
+
+    def add_favorite(self, movie_data: Dict[str, Any]) -> None:
+        self.cache.add_favorite(movie_data)
+
+    def remove_favorite(self, movie_path: str) -> None:
+        self.cache.remove_favorite(movie_path)
+
+    def get_favorites(self) -> List[Dict[str, Any]]:
+        return self.cache.get_favorites()
+
+    def is_favorite(self, movie_path: str) -> bool:
+        return self.cache.is_favorite(movie_path)
+
+    def add_recent_play(self, movie_data: Dict[str, Any]) -> None:
+        self.cache.add_recent_play(movie_data)
+
+    def get_recent_play(self) -> List[Dict[str, Any]]:
+        return self.cache.get_recent_play()
+
+    def clear_recent_play(self) -> None:
+        self.cache.clear_recent_play()
+
+    def save_custom_info(self, movie_path: str, custom_data: Dict[str, Any]) -> None:
+        self.cache.save_custom_info(movie_path, custom_data)
+
+    def get_custom_info(self, movie_path: str) -> Dict[str, Any]:
+        return self.cache.get_custom_info(movie_path)
+
+    def get_all_custom_info(self) -> Dict[str, Dict[str, Any]]:
+        return self.cache.get_all_custom_info()
+
+    def update_movie(self, movie_data: Dict[str, Any]) -> bool:
+        return self.cache.update_movie(movie_data)
+
+    def get_all_tags(self) -> Dict[str, int]:
+        return self.cache.get_all_tags()
+
+    def get_movie_tags(self, movie_path: str) -> List[str]:
+        return self.cache.get_movie_tags(movie_path)
+
+    def add_movie_tag(self, movie_path: str, tag: str) -> None:
+        self.cache.add_movie_tag(movie_path, tag)
+
+    def remove_movie_tag(self, movie_path: str, tag: str) -> None:
+        self.cache.remove_movie_tag(movie_path, tag)
+
+    def get_movies_by_tag(self, tag: str) -> List[str]:
+        return self.cache.get_movies_by_tag(tag)
+
+    def save_playback_progress(self, movie_path: str, progress: int, duration: int, episode_index: int = None) -> bool:
+        return self.cache.save_playback_progress(movie_path, progress, duration, episode_index)
+
+    def get_playback_progress(self, movie_path: str) -> Dict[str, Any]:
+        return self.cache.get_playback_progress(movie_path)
+
+    def get_all_playback_progress(self) -> Dict[str, Dict[str, Any]]:
+        return self.cache.get_all_playback_progress()
+
+    def clear_playback_progress(self, movie_path: str = None) -> bool:
+        return self.cache.clear_playback_progress(movie_path)
+
+
+class VideoCache:
+    _instance = None
+    _cache: Optional[VideoCacheBase] = None
+
+    def __new__(cls, *args, **kwargs):
+        if not cls._instance:
+            cls._instance = super().__new__(cls, *args, **kwargs)
+        return cls._instance
+
+    def __init__(self):
+        if hasattr(self, '_initialized') and self._initialized:
+            return
+        self.config = AppConfig()
+        self._initialized = True
+
+    @classmethod
+    def reset(cls):
+        """Reset the cache and close database connections for clean shutdown."""
+        VideoCacheSQLite.reset()
+        cls._instance = None
+        cls._cache = None
+        logger.info("VideoCache reset completed")
+
+    def _get_cache(self) -> VideoCacheBase:
+        if self._cache is None:
+            self._initialize_sqlite()
+        return self._cache
+
+    def _initialize_sqlite(self):
+        try:
+            from utils.sqlite_initializer import init_sqlite_database
+            if init_sqlite_database():
+                self._cache = VideoCacheSQLite()
+                logger.info("Using SQLite cache (built-in)")
+            else:
+                self._cache = VideoCacheJson()
+                logger.warning("SQLite initialization failed, falling back to JSON cache")
+        except Exception as e:
+            logger.error(f"Failed to initialize SQLite cache: {e}, falling back to JSON")
+            self._cache = VideoCacheJson()
+
+    def save_cache(self, video_list: List[Dict[str, Any]]) -> bool:
+        return self._get_cache().save_cache(video_list)
+
+    def load_cache(self) -> Optional[List[Dict[str, Any]]]:
+        return self._get_cache().load_cache()
+
+    def update_video_cover(self, video_path: str, cover_path: str) -> None:
+        self._get_cache().update_video_cover(video_path, cover_path)
+
+    def clear_cache(self) -> None:
+        self._get_cache().clear_cache()
+
+    def add_favorite(self, movie_data: Dict[str, Any]) -> None:
+        self._get_cache().add_favorite(movie_data)
+
+    def remove_favorite(self, movie_path: str) -> None:
+        self._get_cache().remove_favorite(movie_path)
+
+    def get_favorites(self) -> List[Dict[str, Any]]:
+        return self._get_cache().get_favorites()
+
+    def is_favorite(self, movie_path: str) -> bool:
+        return self._get_cache().is_favorite(movie_path)
+
+    def add_recent_play(self, movie_data: Dict[str, Any]) -> None:
+        self._get_cache().add_recent_play(movie_data)
+
+    def get_recent_play(self) -> List[Dict[str, Any]]:
+        return self._get_cache().get_recent_play()
+
+    def clear_recent_play(self) -> None:
+        self._get_cache().clear_recent_play()
+
+    def save_custom_info(self, movie_path: str, custom_data: Dict[str, Any]) -> None:
+        self._get_cache().save_custom_info(movie_path, custom_data)
+
+    def get_custom_info(self, movie_path: str) -> Dict[str, Any]:
+        return self._get_cache().get_custom_info(movie_path)
+
+    def get_all_custom_info(self) -> Dict[str, Dict[str, Any]]:
+        return self._get_cache().get_all_custom_info()
+
+    def update_movie(self, movie_data: Dict[str, Any]) -> bool:
+        return self._get_cache().update_movie(movie_data)
+
+    def get_all_tags(self) -> Dict[str, int]:
+        return self._get_cache().get_all_tags()
+
+    def get_movie_tags(self, movie_path: str) -> List[str]:
+        return self._get_cache().get_movie_tags(movie_path)
+
+    def add_movie_tag(self, movie_path: str, tag: str) -> None:
+        self._get_cache().add_movie_tag(movie_path, tag)
+
+    def remove_movie_tag(self, movie_path: str, tag: str) -> None:
+        self._get_cache().remove_movie_tag(movie_path, tag)
+
+    def get_movies_by_tag(self, tag: str) -> List[str]:
+        return self._get_cache().get_movies_by_tag(tag)
+
+    def save_playback_progress(self, movie_path: str, progress: int, duration: int, episode_index: int = None) -> bool:
+        return self._get_cache().save_playback_progress(movie_path, progress, duration, episode_index)
+
+    def get_playback_progress(self, movie_path: str) -> Dict[str, Any]:
+        return self._get_cache().get_playback_progress(movie_path)
+
+    def get_all_playback_progress(self) -> Dict[str, Dict[str, Any]]:
+        return self._get_cache().get_all_playback_progress()
+
+    def clear_playback_progress(self, movie_path: str = None) -> bool:
+        return self._get_cache().clear_playback_progress(movie_path)
