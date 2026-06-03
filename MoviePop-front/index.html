@@ -1,0 +1,335 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MoviePop</title>
+  <!-- 全局样式 -->
+  <link rel="stylesheet" href="/assets/styles.css">
+  <!-- ECharts 用于数据可视化（观影报告等） -->
+  <script src="https://cdn.bootcdn.net/ajax/libs/echarts/5.4.3/echarts.min.js"></script>
+</head>
+<body>
+  <!-- 应用外壳：左侧边栏 + 右侧主内容区 -->
+  <div class="app-shell">
+    <!-- 左侧导航栏：品牌标识、导航菜单、连接状态 -->
+    <aside class="sidebar">
+      <!-- 品牌标识 -->
+      <div class="brand-block">
+        <span class="brand-kicker">网易鸡米花</span>
+        <h1>MoviePop</h1>
+        <p>看就完了</p>
+      </div>
+
+      <!-- 导航菜单：切换不同视图（片库、收藏、报告等） -->
+      <nav class="nav-list" id="navList">
+        <button class="nav-item active" data-view="all">我的片库</button>
+        <button class="nav-item" data-view="favorite">收藏</button>
+        <button class="nav-item" data-view="recent">最近播放</button>
+        <button class="nav-item" data-view="local">本地视频</button>
+        <button class="nav-item" data-view="report">观影报告</button>
+        <button class="nav-item" data-view="settings">设置</button>
+      </nav>
+
+      <!-- 侧边栏底部：后端连接状态指示 -->
+      <div class="sidebar-status" id="sidebarStatus">
+        <span class="status-dot"></span>
+        <span>正在初始化</span>
+      </div>
+    </aside>
+
+    <!-- 右侧主内容区 -->
+    <main class="main-shell">
+      <!-- 顶部栏：页面标题、搜索框、刷新按钮（JS 动态更新文案） -->
+      <header class="topbar">
+        <div class="headline">
+          <span class="headline-kicker" id="headlineKicker">媒体库</span>
+          <h2 id="pageTitle">我的片库</h2>
+          <p id="pageSubtitle">统一浏览本地与 WebDAV 的影片、剧集和动画。</p>
+        </div>
+
+        <div class="toolbar">
+          <label class="search-field">
+            <span>搜索</span>
+            <input id="searchInput" type="search" placeholder="按标题、别名、简介筛选">
+          </label>
+          <button class="toolbar-btn accent" id="refreshBtn">刷新片库</button>
+        </div>
+      </header>
+
+      <!-- 统计数据条：显示片库统计信息（JS 动态渲染） -->
+      <section class="stats-strip" id="statsStrip"></section>
+
+      <!-- 后台任务进度条：刷新片库、刮削元数据等长时间任务 -->
+      <section class="job-banner hidden" id="jobBanner">
+        <div>
+          <strong id="jobTitle">后台任务进行中</strong>
+          <p id="jobMessage">请稍候</p>
+        </div>
+        <div class="job-progress">
+          <span id="jobProgressText">0 / 0</span>
+          <div class="progress-track"><span id="jobProgressBar"></span></div>
+        </div>
+      </section>
+
+      <!-- 主内容区域：海报轮播、影片卡片网格等（JS 动态渲染） -->
+      <section class="content-shell" id="contentShell"></section>
+    </main>
+  </div>
+
+  <!-- ========== 模态框区域 ========== -->
+
+  <!-- 影片详情模态框 -->
+  <div class="modal hidden" id="detailModal">
+    <div class="modal-backdrop" data-close="detailModal"></div>
+    <div class="modal-panel detail-panel">
+      <button class="modal-close" data-close="detailModal">关闭</button>
+      <div class="detail-layout" id="detailContent"></div>
+    </div>
+  </div>
+
+  <!-- 内置播放器模态框：MPV 受控模式播放界面 -->
+  <div class="modal hidden" id="playerModal">
+    <div class="modal-backdrop" data-close="playerModal"></div>
+    <div class="modal-panel player-panel">
+      <button class="modal-close" data-close="playerModal">关闭</button>
+      <div class="inline-player-shell vlc-control-shell">
+        <div class="inline-player-head">
+          <div>
+            <span class="section-eyebrow">内置播放器</span>
+            <h3 id="inlinePlayerTitle">正在准备播放</h3>
+            <p id="inlinePlayerMeta">应用内记录播放进度和观影统计</p>
+          </div>
+          <div class="inline-player-status" id="inlinePlayerStatus"></div>
+        </div>
+        <div class="inline-player-stage vlc-control-stage">
+          <div class="inline-player-viewport-frame">
+            <div class="inline-player-viewport" id="inlinePlayerViewport"></div>
+          </div>
+          <div class="vlc-stage-copy">
+            <div class="vlc-stage-title" id="vlcSessionState">等待启动</div>
+            <div class="vlc-stage-meta" id="vlcSessionProgress">0:00 / 0:00</div>
+          </div>
+          <div class="vlc-progress-track">
+            <span id="vlcSessionBar"></span>
+          </div>
+          <div class="inline-control-bar">
+            <div class="inline-control-group">
+              <button class="inline-icon-btn volume-btn" type="button" id="inlineVolumeBtn" title="静音">
+                <span>音量</span>
+              </button>
+              <input class="inline-volume-slider" id="inlineVolumeSlider" type="range" min="0" max="100" value="100" step="1">
+            </div>
+            <div class="inline-control-group compact">
+              <button class="inline-icon-btn" type="button" id="inlineSpeedBtn" title="倍速">1x</button>
+              <button class="inline-icon-btn" type="button" id="inlineQualityBtn" title="画质">画质</button>
+              <button class="inline-icon-btn" type="button" id="inlineSubtitleBtn" title="字幕">字幕</button>
+              <button class="inline-icon-btn" type="button" id="inlineAudioBtn" title="音轨">音轨</button>
+              <button class="inline-icon-btn" type="button" id="inlineSettingsBtn" title="设置">设置</button>
+            </div>
+            <div class="inline-control-group compact">
+              <button class="inline-icon-btn primary" type="button" data-vlc-command="toggle" id="vlcToggleBtn" title="暂停或继续">暂停</button>
+              <button class="inline-icon-btn" type="button" id="inlineFullscreenBtn" title="全屏">全屏</button>
+            </div>
+          </div>
+          <div class="inline-panel-grid">
+            <div class="inline-option-panel" id="inlineSpeedPanel">
+              <div class="inline-panel-title">倍速</div>
+              <div class="inline-chip-row" id="inlineSpeedOptions"></div>
+            </div>
+            <div class="inline-option-panel" id="inlineQualityPanel">
+              <div class="inline-panel-title">画质</div>
+              <div class="inline-chip-row" id="inlineQualityOptions"></div>
+            </div>
+            <div class="inline-option-panel" id="inlineSubtitlePanel">
+              <div class="inline-panel-title">字幕</div>
+              <div class="inline-chip-row" id="inlineSubtitleOptions"></div>
+            </div>
+            <div class="inline-option-panel" id="inlineAudioPanel">
+              <div class="inline-panel-title">音轨</div>
+              <div class="inline-chip-row" id="inlineAudioOptions"></div>
+            </div>
+            <div class="inline-option-panel" id="inlineSettingsPanel">
+              <div class="inline-panel-title">设置</div>
+              <div class="inline-chip-row" id="inlineSettingsOptions"></div>
+            </div>
+          </div>
+          <div class="vlc-control-actions">
+            <button class="ghost-btn" type="button" data-vlc-command="seek_backward">后退 15 秒</button>
+            <button class="ghost-btn" type="button" data-vlc-command="seek_forward">前进 15 秒</button>
+            <button class="ghost-btn danger" type="button" data-vlc-command="stop">停止播放</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 编辑影片信息模态框：手动修正标题、类型、年份、简介 -->
+  <div class="modal hidden" id="editModal">
+    <div class="modal-backdrop" data-close="editModal"></div>
+    <div class="modal-panel compact-panel">
+      <button class="modal-close" data-close="editModal">关闭</button>
+      <form class="form-grid" id="editForm">
+        <div class="section-heading">
+          <span>编辑信息</span>
+          <h3>手动修正影片资料</h3>
+        </div>
+        <label>
+          <span>显示标题</span>
+          <input name="title" required>
+        </label>
+        <label>
+          <span>别名名称</span>
+          <input name="name" required>
+        </label>
+        <label>
+          <span>类型</span>
+          <select name="type">
+            <option value="电影">电影</option>
+            <option value="剧集">剧集</option>
+            <option value="动画">动画</option>
+            <option value="纪录片">纪录片</option>
+          </select>
+        </label>
+        <label>
+          <span>年份</span>
+          <input name="year" type="number" min="1900" max="2099">
+        </label>
+        <label class="full-width">
+          <span>简介</span>
+          <textarea name="intro" rows="6"></textarea>
+        </label>
+        <div class="form-actions full-width">
+          <button type="button" class="ghost-btn" data-close="editModal">取消</button>
+          <button type="submit" class="primary-btn">保存修改</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- 目录选择模态框：选择 WebDAV/本地扫描目录 -->
+  <div class="modal hidden" id="directoryModal">
+    <div class="modal-backdrop" data-close="directoryModal"></div>
+    <div class="modal-panel compact-panel">
+      <button class="modal-close" data-close="directoryModal">关闭</button>
+      <div class="directory-shell">
+        <div class="section-heading">
+          <span id="directoryScopeLabel">目录选择</span>
+          <h3 id="directoryTitle">选择扫描目录</h3>
+        </div>
+        <div class="directory-toolbar">
+          <button class="ghost-btn" id="dirBackBtn">返回上级</button>
+          <button class="ghost-btn" id="dirSelectCurrentBtn">选当前目录</button>
+          <span id="dirCurrentPath">/</span>
+        </div>
+        <input type="text" id="dirSearchInput" class="dir-search-input" placeholder="搜索目录" style="display:none;">
+        <div class="directory-list" id="directoryList"></div>
+        <div class="form-actions">
+          <button class="ghost-btn" data-close="directoryModal">取消</button>
+          <button class="primary-btn" id="dirConfirmBtn">保存选中目录</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 手动匹配模态框：搜索并选择正确的元数据来源 -->
+  <div class="modal hidden" id="candidateModal">
+    <div class="modal-backdrop" data-close="candidateModal"></div>
+    <div class="modal-panel compact-panel">
+      <button class="modal-close" data-close="candidateModal">关闭</button>
+      <div class="candidate-shell">
+        <div class="section-heading">
+          <span>手动匹配</span>
+          <h3>选择正确的封面和元数据</h3>
+        </div>
+        <div class="candidate-toolbar">
+          <input id="candidateSearchInput" type="text" placeholder="输入名称、季数或年份后搜索">
+          <button class="primary-btn" id="candidateSearchBtn">搜索结果</button>
+        </div>
+        <div class="candidate-list" id="candidateList"></div>
+        <div class="form-actions">
+          <button class="ghost-btn" data-close="candidateModal">取消</button>
+          <button class="primary-btn" id="candidateApplyBtn">应用所选结果</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 标签管理模态框：为影片添加或移除自定义标签 -->
+  <div class="modal hidden" id="tagsModal">
+    <div class="modal-backdrop" data-close="tagsModal"></div>
+    <div class="modal-panel compact-panel">
+      <button class="modal-close" data-close="tagsModal">关闭</button>
+      <div class="tags-shell">
+        <div class="section-heading">
+          <span>标签管理</span>
+          <h3>为影片添加或移除标签</h3>
+        </div>
+        <div class="tags-toolbar">
+          <input id="tagInput" type="text" placeholder="输入新标签">
+          <button class="primary-btn" id="addTagBtn">添加标签</button>
+        </div>
+        <div class="tags-list" id="tagsList"></div>
+        <div class="form-actions">
+          <button class="ghost-btn" data-close="tagsModal">关闭</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 首次配置向导：引导用户完成初始设置 -->
+  <div class="wizard-overlay hidden" id="wizardOverlay">
+    <div class="wizard-modal" id="wizardModal"></div>
+  </div>
+
+  <!-- Toast 通知容器 -->
+  <div class="toast-host" id="toastHost"></div>
+
+  <!-- ========== JavaScript 模块加载 ========== -->
+
+  <!-- 基础状态与配置 -->
+  <script src="/assets/js/core/state.js"></script>
+  <script src="/assets/js/config/theme.js"></script>
+  <script src="/assets/js/config/remote.js"></script>
+  <script src="/assets/js/utils/helpers.js"></script>
+  <script src="/assets/js/utils/dom.js"></script>
+  <script src="/assets/js/services/api-client.js"></script>
+
+  <!-- 数据模型 -->
+  <script src="/assets/js/models/series.js"></script>
+  <script src="/assets/js/models/playback.js"></script>
+  <script src="/assets/js/services/data-loader.js"></script>
+  <script src="/assets/js/config/settings-utils.js"></script>
+
+  <!-- 视图与组件 -->
+  <script src="/assets/js/views/router.js"></script>
+  <script src="/assets/js/components/hero.js"></script>
+  <script src="/assets/js/components/card.js"></script>
+  <script src="/assets/js/views/recommend.js"></script>
+  <script src="/assets/js/views/report.js"></script>
+
+  <!-- 设置 -->
+  <script src="/assets/js/settings/renderer.js"></script>
+  <script src="/assets/js/settings/wizard.js"></script>
+  <script src="/assets/js/settings/logic.js"></script>
+
+  <!-- 模态框 -->
+  <script src="/assets/js/modals/detail.js"></script>
+  <script src="/assets/js/modals/edit.js"></script>
+  <script src="/assets/js/modals/directory.js"></script>
+  <script src="/assets/js/modals/candidate.js"></script>
+  <script src="/assets/js/modals/tags.js"></script>
+
+  <!-- 播放器 -->
+  <script src="/assets/js/player/core.js"></script>
+  <script src="/assets/js/player/actions.js"></script>
+
+  <!-- OpenList -->
+  <script src="/assets/js/openlist/client.js"></script>
+  <script src="/assets/js/openlist/ui.js"></script>
+  <script src="/assets/js/openlist/panel.js"></script>
+
+  <!-- 入口（init 与全局事件绑定） -->
+  <script src="/assets/js/core/events.js"></script>
+</body>
+</html>
