@@ -1,204 +1,90 @@
 from __future__ import annotations
 
 import json
-import sqlite3
-from pathlib import Path
-from typing import Any
+import time
+from typing import Any, Optional
 
-from config.app_config import AppConfig
+from utils.sqlite_storage import SQLiteStorage, FeedbackDAO, ProfileDAO, RecommendationDAO
 
 
 class RecommendationRepository:
     """
-    推荐数据存储库 - 用于存储用户偏好、标签和反馈数据
+    推荐系统数据仓库 - 基于SQLite存储
     """
-
-    def __init__(self) -> None:
-        config = AppConfig()
-        config.load_config()
-        self.db_path = config.DATA_DIR / "recommendations.sqlite3"
-        self._init_db()
-
-    def _init_db(self) -> None:
-        """初始化数据库表"""
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        with sqlite3.connect(self.db_path) as conn:
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS feedback (
-                    movie_path TEXT PRIMARY KEY,
-                    rating REAL,
-                    watch_count INTEGER DEFAULT 0,
-                    last_watched INTEGER DEFAULT 0,
-                    created_at INTEGER DEFAULT (strftime('%s', 'now'))
-                )
-                """
-            )
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS tags (
-                    movie_path TEXT,
-                    tag TEXT,
-                    weight REAL DEFAULT 1.0,
-                    PRIMARY KEY (movie_path, tag)
-                )
-                """
-            )
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS profile (
-                    key TEXT PRIMARY KEY,
-                    value TEXT
-                )
-                """
-            )
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS recommendations (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    data TEXT,
-                    generated_at INTEGER
-                )
-                """
-            )
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS external_recommendations (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    data TEXT,
-                    generated_at INTEGER
-                )
-                """
-            )
-            conn.commit()
-
-    def upsert_feedback(self, movie_path: str, **kwargs: Any) -> None:
-        """更新或插入反馈数据"""
-        with sqlite3.connect(self.db_path) as conn:
-            conn.execute(
-                """
-                INSERT OR REPLACE INTO feedback (movie_path, rating, watch_count, last_watched)
-                VALUES (?, COALESCE(?, (SELECT rating FROM feedback WHERE movie_path = ?)),
-                        COALESCE(?, (SELECT watch_count FROM feedback WHERE movie_path = ?)),
-                        COALESCE(?, (SELECT last_watched FROM feedback WHERE movie_path = ?)))
-                """,
-                (
-                    movie_path,
-                    kwargs.get("rating"),
-                    movie_path,
-                    kwargs.get("watch_count"),
-                    movie_path,
-                    kwargs.get("last_watched"),
-                    movie_path,
-                ),
-            )
-            conn.commit()
-
-    def get_feedback_map(self) -> dict[str, dict[str, Any]]:
+    
+    def __init__(self):
+        self.storage = SQLiteStorage()
+        self.feedback_dao = FeedbackDAO(self.storage)
+        self.profile_dao = ProfileDAO(self.storage)
+        self.recommendation_dao = RecommendationDAO(self.storage)
+    
+    def upsert_feedback(self, movie_path: str, **kwargs):
+        """更新或插入用户反馈"""
+        return self.feedback_dao.upsert_feedback(movie_path, **kwargs)
+    
+    def get_feedback_map(self) -> dict[str, dict]:
         """获取所有反馈数据"""
-        with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.execute("SELECT movie_path, rating, watch_count, last_watched FROM feedback")
-            result = {}
-            for row in cursor.fetchall():
-                result[row[0]] = {
-                    "rating": row[1],
-                    "watch_count": row[2] or 0,
-                    "last_watched": row[3] or 0,
-                }
-            return result
-
-    def save_tags(self, movie_path: str, tags: list[str]) -> None:
-        """保存电影标签"""
-        with sqlite3.connect(self.db_path) as conn:
-            conn.execute("DELETE FROM tags WHERE movie_path = ?", (movie_path,))
-            for tag in tags:
-                conn.execute("INSERT INTO tags (movie_path, tag) VALUES (?, ?)", (movie_path, tag))
-            conn.commit()
-
-    def get_tags(self, movie_path: str) -> list[str]:
-        """获取电影标签"""
-        with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.execute("SELECT tag FROM tags WHERE movie_path = ?", (movie_path,))
-            return [row[0] for row in cursor.fetchall()]
-
+        return self.feedback_dao.get_feedback_map()
+    
+    def save_tags(self, movie_path: str, tags: list[tuple[str, float]]):
+        """保存标签"""
+        from utils.sqlite_storage import TagDAO
+        tag_dao = TagDAO(self.storage)
+        for tag_name, weight in tags:
+            tag_dao.add_video_tag(movie_path, tag_name, weight)
+    
+    def get_tags(self, movie_path: str) -> list[tuple[str, float]]:
+        """获取标签"""
+        from utils.sqlite_storage import TagDAO
+        tag_dao = TagDAO(self.storage)
+        tags = tag_dao.get_video_tags(movie_path)
+        return [(tag, 1.0) for tag in tags]
+    
     def get_tags_map(self) -> dict[str, list[str]]:
-        """获取所有电影的标签映射"""
-        with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.execute("SELECT movie_path, tag FROM tags")
-            result: dict[str, list[str]] = {}
-            for row in cursor.fetchall():
-                movie_path, tag = row[0], row[1]
-                if movie_path not in result:
-                    result[movie_path] = []
-                result[movie_path].append(tag)
-            return result
-
-    def save_profile(self, profile: dict[str, Any]) -> None:
-        """保存用户配置文件"""
-        with sqlite3.connect(self.db_path) as conn:
-            for key, value in profile.items():
-                conn.execute(
-                    "INSERT OR REPLACE INTO profile (key, value) VALUES (?, ?)",
-                    (key, json.dumps(value)),
-                )
-            conn.commit()
-
-    def load_profile(self) -> dict[str, Any]:
-        """加载用户配置文件"""
-        with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.execute("SELECT key, value FROM profile")
-            result = {}
-            for row in cursor.fetchall():
-                try:
-                    result[row[0]] = json.loads(row[1])
-                except json.JSONDecodeError:
-                    result[row[0]] = row[1]
-            return result
-
-    def save_recommendations(self, items: list[dict[str, Any]]) -> None:
+        """获取所有视频的标签映射"""
+        from utils.sqlite_storage import TagDAO
+        tag_dao = TagDAO(self.storage)
+        
+        # 获取所有视频标签关联
+        rows = self.storage.query(
+            """
+            SELECT vt.video_path, vt.tag_name, t.name 
+            FROM video_tags vt
+            JOIN tags t ON vt.tag_name = t.name
+            ORDER BY vt.video_path, vt.weight DESC
+            """
+        )
+        
+        tag_map = {}
+        for row in rows:
+            path = row['video_path']
+            tag = row['tag_name']
+            if path not in tag_map:
+                tag_map[path] = []
+            tag_map[path].append(tag)
+        
+        return tag_map
+    
+    def save_profile(self, profile: dict):
+        """保存用户画像"""
+        return self.profile_dao.save_profile(profile)
+    
+    def load_profile(self) -> dict:
+        """加载用户画像"""
+        return self.profile_dao.load_profile()
+    
+    def save_recommendations(self, items: list[dict]):
         """保存推荐结果"""
-        with sqlite3.connect(self.db_path) as conn:
-            conn.execute("DELETE FROM recommendations")
-            conn.execute(
-                "INSERT INTO recommendations (data, generated_at) VALUES (?, ?)",
-                (json.dumps(items), int(__import__('time').time())),
-            )
-            conn.commit()
-
-    def load_recommendations(self, limit: int = 24) -> dict[str, Any]:
+        return self.recommendation_dao.save_recommendations(items)
+    
+    def load_recommendations(self, limit: int = 24) -> dict:
         """加载推荐结果"""
-        with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.execute(
-                "SELECT data, generated_at FROM recommendations ORDER BY generated_at DESC LIMIT 1"
-            )
-            row = cursor.fetchone()
-            if row:
-                return {
-                    "items": json.loads(row[0])[:limit],
-                    "generated_at": row[1],
-                }
-            return {"items": [], "generated_at": 0}
-
-    def save_external_recommendations(self, items: list[dict[str, Any]]) -> None:
+        return self.recommendation_dao.load_recommendations(limit)
+    
+    def save_external_recommendations(self, items: list[dict]):
         """保存外部推荐结果"""
-        with sqlite3.connect(self.db_path) as conn:
-            conn.execute("DELETE FROM external_recommendations")
-            conn.execute(
-                "INSERT INTO external_recommendations (data, generated_at) VALUES (?, ?)",
-                (json.dumps(items), int(__import__('time').time())),
-            )
-            conn.commit()
-
-    def load_external_recommendations(self, limit: int = 12) -> dict[str, Any]:
+        return self.recommendation_dao.save_external_recommendations(items)
+    
+    def load_external_recommendations(self, limit: int = 12) -> dict:
         """加载外部推荐结果"""
-        with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.execute(
-                "SELECT data, generated_at FROM external_recommendations ORDER BY generated_at DESC LIMIT 1"
-            )
-            row = cursor.fetchone()
-            if row:
-                return {
-                    "items": json.loads(row[0])[:limit],
-                    "generated_at": row[1],
-                }
-            return {"items": [], "generated_at": 0}
+        return self.recommendation_dao.load_external_recommendations(limit)

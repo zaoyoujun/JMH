@@ -956,37 +956,55 @@ class CoverScraper:
             return None
 
     # ==================== 手动刮削兼容函数 ====================
-    def search_candidates(self, movie_data, custom_name=None):
+    def search_candidates(self, movie_data, custom_name=None, source=None):
         name = custom_name or movie_data.get("name", movie_data.get("title", ""))
         queries = self._build_base_queries(movie_data, custom_name)
         candidates = []
         diagnostics = []
         seen = set()
-        logger.info(f"开始匹配候选: {name}")
+        logger.info(f"开始匹配候选: {name} (source={source or 'auto'})")
         is_series = movie_data.get("is_series", False)
         is_anime = self._is_anime_content(movie_data)
-        
+
         # 检查是否有豆瓣 cookie
         has_douban_cookie = bool((getattr(self.config, "DOUBAN_COOKIE", "") or "").strip())
-        
-        if is_anime:
-            source_fetchers = [
-                ("AniBK", lambda q: self._fetch_anibk_list(q)),
-            ]
-            # 如果有豆瓣 cookie，添加豆瓣作为备选
-            if has_douban_cookie:
-                source_fetchers.append(("Douban", lambda q: self._fetch_douban_list(q)))
-            # TMDB 作为最后备选
-            source_fetchers.append(("TMDB", lambda q: self._fetch_tmdb_list(q, is_series=is_series)))
+
+        # 显式指定源时，仅使用指定源（保留豆瓣/IMDb 可选项）
+        explicit_source = (source or "auto").strip().lower() if source else "auto"
+        if explicit_source not in ("auto", "tmdb", "anibk", "douban"):
+            explicit_source = "auto"
+
+        if explicit_source == "auto":
+            if is_anime:
+                source_fetchers = [
+                    ("AniBK", lambda q: self._fetch_anibk_list(q)),
+                ]
+                if has_douban_cookie:
+                    source_fetchers.append(("Douban", lambda q: self._fetch_douban_list(q)))
+                source_fetchers.append(("TMDB", lambda q: self._fetch_tmdb_list(q, is_series=is_series)))
+            else:
+                source_fetchers = []
+                if has_douban_cookie:
+                    source_fetchers.append(("Douban", lambda q: self._fetch_douban_list(q)))
+                source_fetchers.append(("TMDB", lambda q: self._fetch_tmdb_list(q, is_series=is_series)))
+                source_fetchers.append(("AniBK", lambda q: self._fetch_anibk_list(q)))
         else:
             source_fetchers = []
-            # 如果有豆瓣 cookie，优先使用豆瓣
-            if has_douban_cookie:
-                source_fetchers.append(("Douban", lambda q: self._fetch_douban_list(q)))
-            # TMDB 作为主要源
-            source_fetchers.append(("TMDB", lambda q: self._fetch_tmdb_list(q, is_series=is_series)))
-            # AniBK 作为最后备选
-            source_fetchers.append(("AniBK", lambda q: self._fetch_anibk_list(q)))
+            if explicit_source == "tmdb":
+                source_fetchers.append(("TMDB", lambda q: self._fetch_tmdb_list(q, is_series=is_series)))
+            elif explicit_source == "anibk":
+                source_fetchers.append(("AniBK", lambda q: self._fetch_anibk_list(q)))
+            elif explicit_source == "douban":
+                if has_douban_cookie:
+                    source_fetchers.append(("Douban", lambda q: self._fetch_douban_list(q)))
+                else:
+                    diagnostics.append({
+                        "source": "Douban",
+                        "queries": 0,
+                        "hits": 0,
+                        "status": "failed",
+                        "error": "未配置豆瓣 cookie，无法检索豆瓣",
+                    })
 
         for source_name, fetcher in source_fetchers:
             if source_name == "TMDB" and self._tmdb_is_temporarily_disabled():
@@ -1033,6 +1051,8 @@ class CoverScraper:
                         "source": source_name,
                         "year": year,
                         "matched_query": q,
+                        "cover_url": item.get("cover_url") or item.get("image") or item.get("poster") or "",
+                        "intro": item.get("intro") or item.get("summary") or item.get("description") or "",
                     }
                     candidate["match_score"] = self._score_candidate(movie_data, candidate)
                     candidates.append(candidate)

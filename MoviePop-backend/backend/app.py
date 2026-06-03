@@ -122,6 +122,7 @@ class UpdateMoviePayload(MoviePathPayload):
 
 class CandidateSearchPayload(MoviePathPayload):
     custom_name: str | None = None
+    source: str | None = None  # auto / tmdb / anibk / douban
 
 
 class CandidateApplyPayload(MoviePathPayload):
@@ -613,7 +614,7 @@ def scrape_single_movie(payload: CandidateSearchPayload) -> dict[str, Any]:
 @app.post("/api/movies/search-candidates")
 def search_movie_candidates(payload: CandidateSearchPayload) -> dict[str, Any]:
     try:
-        return scraper_service.search_candidates(payload.movie_path, payload.custom_name)
+        return scraper_service.search_candidates(payload.movie_path, payload.custom_name, payload.source)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 

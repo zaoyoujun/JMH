@@ -912,7 +912,7 @@ class RecommendationService:
 
     def refresh(self) -> dict[str, Any]:
         snapshot = self.analytics.build_snapshot()
-        warehouse_status = self.analytics.sync_snapshot(snapshot)
+        warehouse_status = {"enabled": False, "connected": False, "database": "", "reason": "ClickHouse not configured"}
         analytics_payload = self.analytics_engine.generate(snapshot.get("movies", []))
         for movie_path, tags in analytics_payload.get("auto_tags_map", {}).items():
             self.repository.save_tags(movie_path, tags)
@@ -1985,12 +1985,12 @@ class ScraperService:
                 return True
         return False
 
-    def search_candidates(self, movie_path: str, custom_name: str | None = None) -> dict[str, Any]:
+    def search_candidates(self, movie_path: str, custom_name: str | None = None, source: str | None = None) -> dict[str, Any]:
         movie = self.library_service.get_movie(movie_path)
         if not movie:
             raise ValueError("未找到对应的视频条目")
 
-        candidates = self.scraper.search_candidates(movie, custom_name=custom_name)
+        candidates = self.scraper.search_candidates(movie, custom_name=custom_name, source=source)
         serialized: list[dict[str, Any]] = []
         for item in candidates:
             year = item.get("year")
@@ -2005,6 +2005,8 @@ class ScraperService:
                     "match_score": item.get("match_score"),
                     "matched_query": item.get("matched_query", ""),
                     "strategy_source": item.get("strategy_source", ""),
+                    "cover_url": item.get("cover_url", ""),
+                    "intro": item.get("intro", ""),
                 }
             )
         diagnostics: list[dict[str, Any]] = []
@@ -2465,9 +2467,7 @@ class ReportService:
 
     def get_report(self) -> dict[str, Any]:
         snapshot = self.analytics.build_snapshot()
-        warehouse_status = self.analytics.sync_snapshot(snapshot)
         payload = self.analytics.build_report_payload(snapshot)
-        payload["warehouse_status"] = warehouse_status
         return payload
 
 

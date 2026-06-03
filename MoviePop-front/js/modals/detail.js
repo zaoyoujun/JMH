@@ -233,7 +233,13 @@ function renderDetail() {
 
   document.querySelectorAll("[data-scrape-movie]").forEach((button) => {
     button.addEventListener("click", () => {
-      scrapeSingle(button.dataset.scrapeMovie);
+      const moviePath = button.dataset.scrapeMovie;
+      const targetMovie = (state.selectedMovie && (state.selectedMovie.path === moviePath || (Array.isArray(state.selectedMovie.seasons) && state.selectedMovie.seasons.some((s) => s.path === moviePath))))
+        ? state.selectedMovie
+        : (state.items.find((item) => item.path === moviePath) || state.selectedMovie);
+      if (targetMovie) {
+        openCandidateModal(targetMovie);
+      }
     });
   });
 }

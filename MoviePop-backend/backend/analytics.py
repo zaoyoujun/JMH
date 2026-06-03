@@ -8,7 +8,6 @@ import time
 from collections import Counter, defaultdict
 from typing import Any
 
-from backend.warehouse import ClickHouseWarehouse, build_time_dimension_rows
 from config.app_config import AppConfig
 from utils.database import VideoCache
 from utils.filename_parser import build_media_tags
@@ -23,7 +22,6 @@ class AnalyticsETLService:
         self.library_service = library_service
         self.repository = recommendation_repository
         self.cache = VideoCache()
-        self.warehouse = ClickHouseWarehouse()
 
     def build_snapshot(self) -> dict[str, Any]:
         movies = self.library_service.get_movies(mode="all", source="combined", search="", force_refresh=False)
@@ -149,15 +147,12 @@ class AnalyticsETLService:
 
         return {
             "movies": analytics_movies,
-            "dim_time_rows": build_time_dimension_rows(dates),
+            "dim_time_rows": [],
             "dim_media_rows": media_rows,
             "bridge_media_tag_rows": tag_rows,
             "fact_scan_rows": scan_rows,
             "fact_behavior_rows": behavior_rows,
         }
-
-    def sync_snapshot(self, snapshot: dict[str, Any]) -> dict[str, Any]:
-        return self.warehouse.sync_snapshot(snapshot)
 
     def build_report_payload(self, snapshot: dict[str, Any]) -> dict[str, Any]:
         movies = snapshot.get("movies", [])
@@ -171,7 +166,7 @@ class AnalyticsETLService:
                 "completion_stats": {},
                 "recent_activity": [],
                 "dashboard_html": "",
-                "warehouse_status": self.warehouse.get_status(),
+                "warehouse_status": {"enabled": False, "connected": False, "database": "", "reason": "ClickHouse not configured"},
             }
 
         total_movies = len(movies)
@@ -247,7 +242,7 @@ class AnalyticsETLService:
                 genre_preferences,
                 activity_items,
             ),
-            "warehouse_status": self.warehouse.get_status(),
+            "warehouse_status": {"enabled": False, "connected": False, "database": "", "reason": "ClickHouse not configured"},
         }
         return payload
 
