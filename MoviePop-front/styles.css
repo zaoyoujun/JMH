@@ -10,7 +10,7 @@
   --text: #f5f7fa;
   --text-soft: #a7b0be;
   --text-faint: #7c8799;
-  --accent: #ff9248;
+  --accent: #ff9650;
   --accent-strong: #ff7c24;
   --accent-soft: rgba(255, 146, 72, 0.16);
   --teal: #53d0c2;
@@ -655,13 +655,9 @@ button {
   gap: 24px;
   align-items: flex-start;
   padding: 24px 26px;
-  border: 1px solid var(--border);
   border-radius: 28px;
-  background:
-    radial-gradient(circle at top right, rgba(255, 146, 72, 0.14), transparent 28%),
-    radial-gradient(circle at bottom left, rgba(83, 208, 194, 0.1), transparent 26%),
-    rgba(14, 18, 24, 0.72);
-  box-shadow: 0 18px 40px rgba(0, 0, 0, 0.18);
+  background: transparent;
+  box-shadow: none;
 }
 
 .headline {
@@ -733,6 +729,30 @@ button {
   transition: border-color 0.2s ease, box-shadow 0.2s ease, background 0.2s ease;
 }
 
+.search-field {
+  position: relative;
+}
+
+.search-field::before {
+  content: "";
+  position: absolute;
+  left: 14px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 20px;
+  height: 20px;
+  background-image: url(image/search.png);
+  background-size: contain;
+  background-repeat: no-repeat;
+  filter: brightness(0) invert(1);
+  pointer-events: none;
+  z-index: 1;
+}
+
+.search-field input {
+  padding-left: 44px;
+}
+
 .form-grid select option,
 select option {
   background: var(--panel-strong);
@@ -771,7 +791,7 @@ select option:checked {
 .detail-action,
 .episode-btn {
   border: 1px solid transparent;
-  border-radius: 16px;
+  border-radius: 14px;
   min-height: 46px;
   padding: 12px 16px;
   transition: background-color 0.2s ease, border-color 0.2s ease, color 0.2s ease, transform 0.2s ease;
@@ -802,9 +822,9 @@ select option:checked {
 .primary-btn,
 .detail-action.primary,
 .card-action.primary {
-  background: linear-gradient(180deg, var(--accent) 0%, var(--accent-strong) 100%);
+  background: linear-gradient(90deg, var(--accent) 0%, var(--accent-strong) 100%);
   color: #fff;
-  border-color: transparent;
+  border: none;
   box-shadow: 0 14px 30px rgba(0, 0, 0, 0.2);
 }
 
