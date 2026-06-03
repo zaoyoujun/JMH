@@ -158,7 +158,7 @@ button {
   flex-direction: column;
   gap: 24px;
   padding: 28px 22px;
-  background: var(--sidebar-bg);
+  background: #000;
   color: #fff;
   position: sticky;
   top: 0;
@@ -168,7 +168,6 @@ button {
   box-shadow: inset -1px 0 0 rgba(255, 255, 255, 0.03);
 }
 
-.brand-block,
 .sidebar-status,
 .stat-chip,
 .job-banner,
@@ -523,43 +522,38 @@ button {
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04), 0 22px 50px rgba(0, 0, 0, 0.2);
 }
 
-.brand-block::after {
-  content: "";
-  position: absolute;
-  right: 18px;
-  top: 16px;
-  width: 54px;
-  height: 54px;
-  border-radius: 18px;
-  background:
-    linear-gradient(145deg, rgba(255, 146, 72, 0.95), rgba(255, 146, 72, 0.08)),
-    rgba(255, 255, 255, 0.08);
-  box-shadow: 0 10px 28px rgba(255, 124, 36, 0.24);
-  opacity: 0.85;
+/* 我的片库 */
+.nav-item[data-view="all"] {
+  background-image: url(./image/042_电影.svg);
 }
 
-.brand-kicker {
-  display: inline-flex;
-  margin: 0;
-  color: rgba(255, 255, 255, 0.58);
-  font-size: 12px;
-  text-transform: uppercase;
+/* 收藏 */
+.nav-item[data-view="favorite"] {
+  background-image: url(./image/042_收藏-24.svg);
 }
 
-.brand-block h1 {
-  margin: 10px 0 8px;
-  font-family: var(--title-font);
-  font-size: 38px;
-  letter-spacing: 0.02em;
-  line-height: 1.02;
+/* 最近播放 */
+.nav-item[data-view="recent"] {
+  background-image: url(./image/042_视频.svg);
 }
 
-.brand-block p {
-  margin: 0;
-  color: rgba(255, 255, 255, 0.68);
-  font-size: 13px;
-  line-height: 1.6;
+/* 本地视频 */
+.nav-item[data-view="local"] {
+  background-image: url(./image/042_文件.svg);
 }
+
+/* 观影报告 */
+.nav-item[data-view="report"] {
+  background-image: url(./image/042_资料.svg);
+}
+
+/* 设置 */
+.nav-item[data-view="settings"] {
+  background-image: url(./image/042_设置.svg);
+}
+
+
+
 
 .nav-list {
   display: grid;
@@ -570,13 +564,20 @@ button {
   position: relative;
   border: 1px solid transparent;
   border-radius: 16px;
-  padding: 14px 16px;
+  padding: 16px 16px 16px 70px;
   text-align: left;
-  background: transparent;
-  color: rgba(255, 255, 255, 0.72);
+  background-color: transparent;
+  color: rgba(255, 255, 255);
+  font-size: 20px;
+  font-family: var(--ui-font);
   overflow: hidden;
   transition: background-color 0.2s ease, color 0.2s ease, border-color 0.2s ease, transform 0.2s ease, box-shadow 0.2s ease;
+  background-repeat: no-repeat;
+  background-size: auto 2.7em;
+  background-position: 14px center;
+  filter: brightness(0) invert(1);
 }
+
 
 .nav-item::before {
   content: "";
@@ -590,20 +591,29 @@ button {
 
 .nav-item:hover,
 .nav-item.active {
-  background: rgba(255, 255, 255, 0.08);
-  color: #fff;
-  border-color: rgba(255, 255, 255, 0.08);
+  background-color: #ffffff;  /* ← 白色背景 */
+  color: #000000;  /* ← 黑色文字 */
+  border-color: #ffffff;
   box-shadow: 0 12px 24px rgba(0, 0, 0, 0.16);
   transform: translateX(4px);
+  filter: none;  /* ← 移除滤镜，让图标保持黑色 */
 }
+
+
 
 .nav-item:hover::before,
 .nav-item.active::before {
   width: 100%;
 }
 
-.sidebar-status {
+.sidebar-bottom {
   margin-top: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.sidebar-status {
   display: inline-flex;
   align-items: center;
   gap: 10px;
@@ -629,6 +639,7 @@ button {
   min-width: 0;
   padding: var(--main-padding);
   position: relative;
+  background: #000000;
 }
 
 .topbar {
@@ -4774,7 +4785,6 @@ select:disabled {
 }
 
 @media (max-width: 640px) {
-  .brand-block h1,
   .headline h2,
   .settings-overview-copy h3,
   .section-head h3,

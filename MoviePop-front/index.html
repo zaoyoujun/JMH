@@ -14,12 +14,7 @@
   <div class="app-shell">
     <!-- 左侧导航栏：品牌标识、导航菜单、连接状态 -->
     <aside class="sidebar">
-      <!-- 品牌标识 -->
-      <div class="brand-block">
-        <span class="brand-kicker">网易鸡米花</span>
-        <h1>MoviePop</h1>
-        <p>看就完了</p>
-      </div>
+      
 
       <!-- 导航菜单：切换不同视图（片库、收藏、报告等） -->
       <nav class="nav-list" id="navList">
@@ -28,13 +23,15 @@
         <button class="nav-item" data-view="recent">最近播放</button>
         <button class="nav-item" data-view="local">本地视频</button>
         <button class="nav-item" data-view="report">观影报告</button>
-        <button class="nav-item" data-view="settings">设置</button>
       </nav>
 
-      <!-- 侧边栏底部：后端连接状态指示 -->
-      <div class="sidebar-status" id="sidebarStatus">
-        <span class="status-dot"></span>
-        <span>正在初始化</span>
+      <!-- 底部区域：状态栏 + 设置按钮（设置沉底） -->
+      <div class="sidebar-bottom">
+        <div class="sidebar-status" id="sidebarStatus">
+          <span class="status-dot"></span>
+          <span>正在初始化</span>
+        </div>
+        <button class="nav-item" data-view="settings">设置</button>
       </div>
     </aside>
 
