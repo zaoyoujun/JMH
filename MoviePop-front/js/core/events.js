@@ -32,6 +32,19 @@ function bindGlobalEvents() {
     await loadCurrentView();
   });
 
+  // 监听侧边栏底部设置按钮的点击
+  const sidebarBottom = document.querySelector(".sidebar-bottom");
+  if (sidebarBottom) {
+    sidebarBottom.addEventListener("click", async (event) => {
+      const button = event.target.closest(".nav-item");
+      if (!button) return;
+      state.view = button.dataset.view;
+      state.search = "";
+      elements.searchInput.value = "";
+      await loadCurrentView();
+    });
+  }
+
   elements.searchInput.addEventListener("input", () => {
     state.search = elements.searchInput.value.trim();
     window.clearTimeout(state.searchTimer);

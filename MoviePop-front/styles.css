@@ -556,8 +556,15 @@ button {
 
 
 .nav-list {
-  display: grid;
+  display: flex;
+  flex-direction: column;
   gap: 10px;
+  flex: 1;
+  min-height: 0;
+}
+
+.nav-item-settings {
+  margin-top: auto;
 }
 
 .nav-item {
