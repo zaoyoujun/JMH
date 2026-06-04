@@ -21,6 +21,7 @@ function renderDetail() {
   const title = escapeHtml(currentTitle);
   const seasonLabel = getSeasonEntryLabel(currentSeason, movie, (Array.isArray(movie.seasons) ? movie.seasons.indexOf(currentSeason) : 0));
   const cover = currentSeason.cover_url || movie.cover_url || "";
+  const backdrop = currentSeason.backdrop_url || movie.backdrop_url || "";
   const progressPercent = Number(currentSeason.playback?.percent || 0);
   const meta = [
     currentSeason.type || movie.type || "视频",
@@ -102,7 +103,7 @@ function renderDetail() {
   const totalEpisodes = movie.is_series ? (movie.episode_count || 0) : 0;
   
   document.getElementById("detailContent").innerHTML = `
-    <div class="detail-hero" style="background-image: url(${cover || 'https://via.placeholder.com/1920x1080?text=No+Cover'})">
+    <div class="detail-hero" style="background-image: url(${backdrop || cover || 'https://via.placeholder.com/1920x1080?text=No+Cover'})">
       <div class="detail-content">
         <img class="detail-poster" src="${cover || 'https://via.placeholder.com/400x600?text=No+Poster'}" alt="${title}">
         <div class="detail-main">

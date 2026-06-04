@@ -19,7 +19,7 @@ from urllib.parse import quote, unquote, urlencode
 
 
 from backend.analytics import AnalyticsETLService, TFIDFRecommendationEngine
-from backend.recommendation_repository import RecommendationRepository
+from utils.storage import Storage
 from config.app_config import AppConfig
 from core.cover_scraper import CoverScraper
 from core.local_video_library import LocalVideoLibraryManager
@@ -883,7 +883,7 @@ class LibraryService:
 class RecommendationService:
     def __init__(self, library_service: LibraryService) -> None:
         self.library_service = library_service
-        self.repository = RecommendationRepository()
+        self.repository = Storage()
         self.analytics_engine = TFIDFRecommendationEngine()
         self.analytics = AnalyticsETLService(library_service, self.repository)
 
@@ -2063,9 +2063,12 @@ class ScraperService:
             custom_name=custom_name,
             force_update_meta=True,
         )
+        backdrop_url = self.scraper.get_last_backdrop_url()
         updates: dict[str, Any] = {}
         if cover_path:
             updates["cover_path"] = cover_path
+        if backdrop_url:
+            updates["backdrop_url"] = backdrop_url
         if intro_text and intro_text.strip():
             updates["intro"] = intro_text.strip()
         if scraped_year:
@@ -2111,6 +2114,7 @@ class ScraperService:
                     movie,
                     force_update_meta=True,
                 )
+                backdrop_url = self.scraper.get_last_backdrop_url()
             except Exception:
                 logger.exception("抓取失败: %s", title)
                 continue
@@ -2121,6 +2125,8 @@ class ScraperService:
                 movie["intro"] = intro_text.strip()
             if scraped_year:
                 movie["year"] = scraped_year
+            if backdrop_url:
+                movie["backdrop_url"] = backdrop_url
             if cover_path or (intro_text and intro_text.strip()) or scraped_year:
                 updated_count += 1
 
@@ -2462,7 +2468,7 @@ class OpenListService:
 class ReportService:
     def __init__(self, library_service: LibraryService) -> None:
         self.library_service = library_service
-        self.repository = RecommendationRepository()
+        self.repository = Storage()
         self.analytics = AnalyticsETLService(library_service, self.repository)
 
     def get_report(self) -> dict[str, Any]:

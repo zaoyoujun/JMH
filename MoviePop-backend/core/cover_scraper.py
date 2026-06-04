@@ -103,6 +103,7 @@ class CoverScraper:
         self._last_candidate_diagnostics = []
         self._tmdb_disabled_until = 0
         self._tmdb_failure_reason = ""
+        self._last_backdrop_url = ""
 
     def _build_douban_headers(self):
         headers = HEADERS.copy()
@@ -740,6 +741,9 @@ class CoverScraper:
             detail_data = self._tmdb_api_detail(detail_url)
             if detail_data:
                 poster_path = detail_data.get("poster_path")
+                backdrop_path = detail_data.get("backdrop_path")
+                if backdrop_path:
+                    self._last_backdrop_url = f"https://image.tmdb.org/t/p/original{backdrop_path}"
                 if poster_path:
                     return f"{self.tmdb_image_base.rstrip('/')}/{poster_path.lstrip('/')}"
             headers = HEADERS.copy()
@@ -762,6 +766,12 @@ class CoverScraper:
         except Exception as e:
             logger.error(f"提取TMDB封面失败: {e}")
             return None
+
+    def get_last_backdrop_url(self):
+        """Return the TMDB backdrop URL captured during the last scraping operation."""
+        url = self._last_backdrop_url
+        self._last_backdrop_url = ""
+        return url
 
     def _get_douban_cover(self, detail_url):
         """提取豆瓣封面"""
