@@ -6,8 +6,12 @@ function render() {
   renderToolbarState();
   disposeReportCharts();
 
+  // 清空两个容器
+  elements.heroShell.innerHTML = "";
+  elements.gridShell.innerHTML = "";
+
   if (state.view === "settings") {
-    elements.contentShell.innerHTML = renderSettingsView();
+    elements.heroShell.innerHTML = renderSettingsView();
     bindSettingsView();
     if (_currentSettingsTab === "openlist") {
       initOpenListPanel();
@@ -17,20 +21,20 @@ function render() {
   }
 
   if (state.view === "recommend") {
-    elements.contentShell.innerHTML = renderRecommendationView();
+    elements.heroShell.innerHTML = renderRecommendationView();
     clearRecommendationCarousel();
     return;
   }
 
   if (state.view === "report") {
-    elements.contentShell.innerHTML = renderReportView();
+    elements.heroShell.innerHTML = renderReportView();
     clearRecommendationCarousel();
     requestAnimationFrame(() => initReportCharts());
     return;
   }
 
   if (state.view === "all" && !state.config?.has_any_library) {
-    elements.contentShell.innerHTML = renderSetupState(
+    elements.heroShell.innerHTML = renderSetupState(
       "还没有接入影视库",
       "接入 WebDAV 或本地目录之后，这里会自动汇总成一个片库。",
       "去设置里接入媒体源"
@@ -42,7 +46,7 @@ function render() {
 
   const displayItems = getDisplayItems();
   if (!displayItems.length) {
-    elements.contentShell.innerHTML = renderEmptyState();
+    elements.heroShell.innerHTML = renderEmptyState();
     clearRecommendationCarousel();
     return;
   }
@@ -65,10 +69,16 @@ function render() {
         </div>
       </section>
     `;
-  elements.contentShell.innerHTML = `
+  
+  // 将画报墙渲染到heroShell，影视网格渲染到gridShell
+  elements.heroShell.innerHTML = `
     <div class="library-home">
       ${renderShelfHero(featured, heroItems)}
       ${state.view === "all" ? renderHomeRecommendationSection() : ""}
+    </div>
+  `;
+  elements.gridShell.innerHTML = `
+    <div class="library-home">
       ${groupedLibraryMarkup}
     </div>
   `;

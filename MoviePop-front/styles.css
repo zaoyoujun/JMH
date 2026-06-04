@@ -940,6 +940,14 @@ select:disabled {
   padding-bottom: 24px;
 }
 
+.hero-shell,
+.grid-shell {
+  min-height: 0;
+  display: grid;
+  gap: 20px;
+  padding-bottom: 24px;
+}
+
 .library-home {
   display: grid;
   gap: 22px;

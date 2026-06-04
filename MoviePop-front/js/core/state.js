@@ -55,7 +55,8 @@ const state = {
 
 // 视图元数据
 const elements = {
-  contentShell: document.getElementById("contentShell"),
+  heroShell: document.getElementById("heroShell"),
+  gridShell: document.getElementById("gridShell"),
   statsStrip: document.getElementById("statsStrip"),
   navList: document.getElementById("navList"),
   searchInput: document.getElementById("searchInput"),
