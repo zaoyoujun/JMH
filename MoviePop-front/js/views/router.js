@@ -9,6 +9,12 @@ function render() {
   // 清空两个容器
   elements.heroShell.innerHTML = "";
   elements.gridShell.innerHTML = "";
+  
+  // 移除main-shell背景
+  const mainShellBackdrop = document.querySelector('.main-shell-backdrop');
+  if (mainShellBackdrop) {
+    mainShellBackdrop.remove();
+  }
 
   if (state.view === "settings") {
     elements.heroShell.innerHTML = renderSettingsView();
@@ -53,6 +59,8 @@ function render() {
 
   const heroItems = getHomeHeroItems();
   const featured = heroItems[0] || displayItems[0];
+  const activeIndex = heroItems.length > 0 ? state.heroCarouselIndex % heroItems.length : 0;
+  const activeItem = heroItems[activeIndex] || featured;
   const groupedLibraryMarkup = !state.search && isListView(state.view)
     ? renderDynamicLibrarySections(displayItems)
     : `
@@ -71,12 +79,19 @@ function render() {
     `;
   
   // 将画报墙渲染到heroShell，影视网格渲染到gridShell
+  // 同时将背景渲染到main-shell区域
   elements.heroShell.innerHTML = `
     <div class="library-home">
       ${renderShelfHero(featured, heroItems)}
       ${state.view === "all" ? renderHomeRecommendationSection() : ""}
     </div>
   `;
+  
+  // 将背景渲染到main-shell区域
+  const mainShell = document.querySelector('.main-shell');
+  if (mainShell && activeItem) {
+    renderHeroBackdropToContainer(activeItem, getHeroDisplayTitle(activeItem), '.main-shell');
+  }
   elements.gridShell.innerHTML = `
     <div class="library-home">
       ${groupedLibraryMarkup}

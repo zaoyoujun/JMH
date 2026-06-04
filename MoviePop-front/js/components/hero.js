@@ -20,6 +20,26 @@ function renderHeroBackdrop(movie, title) {
   return `<div class="shelf-hero-backdrop">${cover}</div>`;
 }
 
+// 抽取的背景渲染逻辑：将背景渲染到指定容器
+function renderHeroBackdropToContainer(movie, title, containerSelector) {
+  const container = document.querySelector(containerSelector);
+  if (!container) return;
+  
+  // 移除之前的背景元素
+  const existingBackdrop = container.querySelector('.main-shell-backdrop');
+  if (existingBackdrop) {
+    existingBackdrop.remove();
+  }
+  
+  // 创建新的背景元素
+  const backdropElement = document.createElement('div');
+  backdropElement.className = 'main-shell-backdrop';
+  backdropElement.innerHTML = renderHeroBackdrop(movie, title);
+  
+  // 添加到容器开头
+  container.insertBefore(backdropElement, container.firstChild);
+}
+
 // 标题下方的影片信息胶囊：类型、年份、来源、集数。
 function renderHeroMeta(movie) {
   return [
@@ -139,8 +159,6 @@ function renderShelfHero(movie, heroItems = []) {
 
   return `
     <section class="shelf-hero">
-      ${renderHeroBackdrop(activeMovie, activeTitleText)}
-      <div class="shelf-hero-overlay"></div>
       <div class="shelf-hero-content">
         ${renderHeroCopy(activeMovie)}
         ${renderHeroSide(items, activeIndex)}
