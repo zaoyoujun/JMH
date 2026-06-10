@@ -5,113 +5,144 @@ import json
 import os
 
 from utils.logger import get_logger
+from utils.storage import Storage
 
 logger = get_logger()
+def _parse_duration_to_seconds(value: str) -> int:
+    """Parse duration string like '01:32:00' or '45:30' to seconds."""
+    if not value or value == '未知':
+        return 0
+    parts = str(value).strip().split(':')
+    if len(parts) == 3:
+        return int(parts[0]) * 3600 + int(parts[1]) * 60 + int(parts[2])
+    elif len(parts) == 2:
+        return int(parts[0]) * 60 + int(parts[1])
+    try:
+        return int(float(value))
+    except (ValueError, TypeError):
+        return 0
+
 
 class BehaviorAnalyticsService:
     """观影行为分析服务 - 基于用户观影记录生成大数据分析报告"""
     
-    def __init__(self, data_dir: str = "data"):
+    def __init__(self, data_dir: str = "data", storage: Storage | None = None):
         self.data_dir = data_dir
-        self.behavior_file = os.path.join(data_dir, "user_behavior.json")
-        self.media_file = os.path.join(data_dir, "media_library.json")
-        self.recent_play_file = os.path.join(data_dir, "recent_play.json")
-        # 确保数据目录存在
+        self.storage = storage or Storage()
         os.makedirs(data_dir, exist_ok=True)
         
     def _load_behavior_data(self) -> List[Dict]:
         """加载用户行为数据（包括从最近播放记录导入的数据）"""
         behaviors = []
-        
+
         # 加载新的行为数据
-        if os.path.exists(self.behavior_file):
-            try:
-                with open(self.behavior_file, 'r', encoding='utf-8') as f:
-                    data = json.load(f)
-                    if isinstance(data, list):
-                        behaviors.extend(data)
-            except Exception as e:
-                logger.error(f"加载行为数据失败: {e}")
-        
+        raw = self.storage.get_behavior_data()
+        for item in raw:
+            behaviors.append({
+                'type': 'watch',
+                'media_id': item.get('media_path', ''),
+                'duration': item.get('duration', 0),
+                'progress': item.get('progress', 0),
+                'media_type': item.get('media_type', 'movie'),
+                'genres': item.get('genres', []),
+                'timestamp': item.get('timestamp', ''),
+            })
+
         # 从最近播放记录导入历史数据
         try:
             recent_play_data = self._load_recent_play_data()
             for item in recent_play_data:
-                # 避免重复导入
                 media_id = item.get('path', '')
                 if not media_id:
                     continue
-                    
-                if not any(b.get('media_id') == media_id for b in behaviors):
-                    playback = item.get('playback', {})
-                    duration = playback.get('duration', 0)
-                    if duration == 0:
-                        duration = 300  # 默认5分钟
-                    
-                    timestamp = playback.get('timestamp')
-                    if timestamp:
-                        # 转换为ISO格式
-                        timestamp = datetime.fromtimestamp(timestamp).isoformat()
-                    else:
-                        timestamp = datetime.now().isoformat()
-                    
-                    behaviors.append({
-                        'type': 'watch',
-                        'media_id': media_id,
-                        'duration': duration,
-                        'progress': playback.get('percent', 0),
-                        'media_type': 'series' if item.get('is_series') else 'movie',
-                        'genres': item.get('genres', []),
-                        'timestamp': timestamp
-                    })
+                if any(b.get('media_id') == media_id for b in behaviors):
+                    continue
+
+                playback = item.get('playback', {})
+                duration = playback.get('duration', 0)
+                if duration == 0:
+                    duration = 300
+
+                timestamp = playback.get('timestamp')
+                if timestamp:
+                    import time as _time
+                    timestamp = datetime.fromtimestamp(timestamp).isoformat()
+                else:
+                    timestamp = datetime.now().isoformat()
+
+                genres = []
+                for tag_list in [item.get('tags', []), item.get('inferred_tags', []), item.get('manual_tags', [])]:
+                    if isinstance(tag_list, list):
+                        genres.extend(tag_list)
+
+                behaviors.append({
+                    'type': 'watch',
+                    'media_id': media_id,
+                    'duration': duration,
+                    'progress': playback.get('percent', 0),
+                    'media_type': 'series' if item.get('is_series') else 'movie',
+                    'genres': genres,
+                    'timestamp': timestamp,
+                })
         except Exception as e:
             logger.error(f"导入最近播放记录失败: {e}")
-        
+
         return behaviors
     
     def _load_recent_play_data(self) -> List[Dict]:
         """加载最近播放记录"""
-        if os.path.exists(self.recent_play_file):
-            with open(self.recent_play_file, 'r', encoding='utf-8') as f:
-                return json.load(f)
-        return []
+        items = self.storage.get_recent_play()
+        result = []
+        for item in items:
+            merged = dict(item)
+            movie_json_raw = item.get('movie_json', '{}')
+            if isinstance(movie_json_raw, str):
+                try:
+                    movie_data = json.loads(movie_json_raw)
+                except (json.JSONDecodeError, TypeError):
+                    movie_data = {}
+            elif isinstance(movie_json_raw, dict):
+                movie_data = movie_json_raw
+            else:
+                movie_data = {}
+            merged.update(movie_data)
+            result.append(merged)
+        return result
     
     def _save_behavior_data(self, behaviors: List[Dict]) -> None:
-        """保存用户行为数据"""
-        with open(self.behavior_file, 'w', encoding='utf-8') as f:
-            json.dump(behaviors, f, ensure_ascii=False, indent=2)
+        """保存用户行为数据 (deprecated - Storage handles persistence)"""
+        pass
     
     def _load_media_data(self) -> Dict[str, Dict]:
         """加载媒体库数据"""
-        if os.path.exists(self.media_file):
-            with open(self.media_file, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-                return {item.get('id', str(i)): item for i, item in enumerate(data)}
-        return {}
+        videos = self.storage.load_video_cache() or []
+        result = {}
+        for i, item in enumerate(videos):
+            path = item.get('path', str(i))
+            # Build genres from tags
+            genres = []
+            tags = item.get('tags', [])
+            if isinstance(tags, list):
+                genres.extend(tags)
+            inferred = item.get('inferred_tags', [])
+            if isinstance(inferred, list):
+                genres.extend(inferred)
+            manual = item.get('manual_tags', [])
+            if isinstance(manual, list):
+                genres.extend(manual)
+            item_copy = dict(item)
+            item_copy['id'] = path
+            item_copy['genres'] = list(set(genres))
+            result[path] = item_copy
+        return result
     
     def record_watch_behavior(self, media_id: str, duration: int, progress: float = None, media_type: str = None, genres: List[str] = None) -> None:
         """记录观看行为数据"""
-        behaviors = self._load_behavior_data_without_recent()
-        
-        behavior_record = {
-            'type': 'watch',
-            'media_id': media_id,
-            'duration': duration,
-            'progress': progress,
-            'media_type': media_type,
-            'genres': genres or [],
-            'timestamp': datetime.now().isoformat()
-        }
-        
-        behaviors.append(behavior_record)
-        self._save_behavior_data(behaviors)
+        self.storage.record_watch_behavior(media_id, duration, progress, media_type, genres)
     
     def _load_behavior_data_without_recent(self) -> List[Dict]:
-        """只加载新的行为数据（不包含从最近播放导入的）"""
-        if os.path.exists(self.behavior_file):
-            with open(self.behavior_file, 'r', encoding='utf-8') as f:
-                return json.load(f)
-        return []
+        """只加载新的行为数据 (deprecated)"""
+        return self.storage.get_behavior_data()
     
     def has_valid_behavior_data(self) -> bool:
         """检查是否有有效的行为数据"""
@@ -156,21 +187,17 @@ class BehaviorAnalyticsService:
     def analyze_genre_preference(self) -> List[Dict[str, Any]]:
         """分析类型偏好分布"""
         behaviors = self._load_behavior_data()
-        media_data = self._load_media_data()
         
         genre_counts = defaultdict(int)
         genre_duration = defaultdict(int)
         
         for behavior in behaviors:
             if behavior.get('type') == 'watch':
-                media_id = behavior.get('media_id')
-                media = media_data.get(str(media_id))
-                if media:
-                    genres = media.get('genres', [])
-                    duration = behavior.get('duration', 0)
-                    for genre in genres:
-                        genre_counts[genre] += 1
-                        genre_duration[genre] += duration
+                genres = behavior.get('genres', [])
+                duration = int(behavior.get('duration', 0))
+                for genre in genres:
+                    genre_counts[str(genre)] += 1
+                    genre_duration[str(genre)] += duration
         
         # 转换为百分比并排序
         total_count = sum(genre_counts.values()) or 1
@@ -229,7 +256,8 @@ class BehaviorAnalyticsService:
                 not_started += 1
                 continue
             
-            total_duration = media.get('duration', 0)
+            # Convert duration to seconds (handles string like '01:32:00' or '未知')
+            total_duration = _parse_duration_to_seconds(str(media.get('duration', '0')))
             watched_duration = sum(r.get('duration', 0) for r in watch_records)
             
             # 判断完播状态（80%以上视为完成）

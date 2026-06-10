@@ -16,11 +16,11 @@ LOCAL_PATH_RE = re.compile(r"^(?:[A-Za-z]:[\\/]|\\\\)")
 
 
 class AnalyticsETLService:
-    def __init__(self, library_service, recommendation_repository) -> None:
+    def __init__(self, library_service, storage) -> None:
         self.config = AppConfig()
         self.config.load_config()
         self.library_service = library_service
-        self.repository = recommendation_repository
+        self.repository = storage
         self.cache = VideoCache()
 
     def build_snapshot(self) -> dict[str, Any]:
@@ -35,12 +35,7 @@ class AnalyticsETLService:
         recent_paths = {str(item.get("path") or "") for item in recent_play}
         now = dt.datetime.now()
         today = now.date()
-        dates: set[dt.date] = {today}
 
-        media_rows: list[dict[str, Any]] = []
-        tag_rows: list[dict[str, Any]] = []
-        scan_rows: list[dict[str, Any]] = []
-        behavior_rows: list[dict[str, Any]] = []
         analytics_movies: list[dict[str, Any]] = []
 
         for movie in movies:
@@ -65,7 +60,6 @@ class AnalyticsETLService:
             updated_at = self._timestamp_to_datetime(
                 playback.get("timestamp") or feedback.get("updated_at") or time.time()
             )
-            dates.add(updated_at.date())
 
             analytics_movie = {
                 "path": path,
@@ -90,63 +84,10 @@ class AnalyticsETLService:
             }
             analytics_movies.append(analytics_movie)
 
-            media_rows.append(
-                {
-                    "media_path": path,
-                    "title": title,
-                    "media_type": analytics_movie["type"],
-                    "year": year if year > 0 else 0,
-                    "year_bucket": analytics_movie["year_bucket"],
-                    "source": source,
-                    "provider": provider,
-                    "is_series": 1 if analytics_movie["is_series"] else 0,
-                    "favorite": 1 if analytics_movie["is_favorite"] else 0,
-                    "has_intro": 1 if analytics_movie["has_intro"] else 0,
-                    "has_cover": 1 if analytics_movie["cover_path"] else 0,
-                    "updated_at": updated_at,
-                }
-            )
-
-            for tag in merged_tags:
-                tag_rows.append(
-                    {
-                        "media_path": path,
-                        "tag": tag,
-                        "tag_source": "hybrid",
-                        "updated_at": updated_at,
-                    }
-                )
-
-            scan_rows.append(
-                {
-                    "snapshot_date": today,
-                    "media_path": path,
-                    "source": source,
-                    "provider": provider,
-                    "tag_count": len(merged_tags),
-                    "playback_percent": playback_percent,
-                    "rating": rating,
-                    "updated_at": updated_at,
-                }
-            )
-
-            behavior_rows.append(
-                {
-                    "event_date": updated_at.date(),
-                    "media_path": path,
-                    "favorite": 1 if analytics_movie["is_favorite"] else 0,
-                    "recent": 1 if analytics_movie["is_recent"] else 0,
-                    "playback_percent": playback_percent,
-                    "progress_seconds": analytics_movie["progress_seconds"],
-                    "duration_seconds": analytics_movie["duration_seconds"],
-                    "rating": rating,
-                    "watch_seconds": analytics_movie["progress_seconds"],
-                    "updated_at": updated_at,
-                }
-            )
 
         return {
             "movies": analytics_movies,
+<<<<<<< Updated upstream
             "dim_time_rows": [],
             "dim_media_rows": media_rows,
             "bridge_media_tag_rows": tag_rows,
@@ -154,6 +95,11 @@ class AnalyticsETLService:
             "fact_behavior_rows": behavior_rows,
         }
 
+=======
+        }
+
+
+>>>>>>> Stashed changes
     def build_report_payload(self, snapshot: dict[str, Any]) -> dict[str, Any]:
         movies = snapshot.get("movies", [])
         if not movies:
@@ -166,8 +112,12 @@ class AnalyticsETLService:
                 "completion_stats": {},
                 "recent_activity": [],
                 "dashboard_html": "",
+<<<<<<< Updated upstream
                 "warehouse_status": {"enabled": False, "connected": False, "database": "", "reason": "ClickHouse not configured"},
             }
+=======
+                }
+>>>>>>> Stashed changes
 
         total_movies = len(movies)
         favorites = sum(1 for movie in movies if movie.get("is_favorite"))
@@ -242,7 +192,10 @@ class AnalyticsETLService:
                 genre_preferences,
                 activity_items,
             ),
+<<<<<<< Updated upstream
             "warehouse_status": {"enabled": False, "connected": False, "database": "", "reason": "ClickHouse not configured"},
+=======
+>>>>>>> Stashed changes
         }
         return payload
 

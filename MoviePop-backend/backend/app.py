@@ -31,6 +31,7 @@ from config.app_config import AppConfig
 from core.openlist_manager import openlist_manager
 from core.remote_source import infer_remote_provider, make_remote_client
 from utils.logger import get_logger
+from utils.storage import Storage
 
 logger = get_logger()
 
@@ -43,7 +44,7 @@ playback_service = PlaybackService(library_service)
 scraper_service = ScraperService(library_service)
 report_service = ReportService(library_service)
 openlist_service = OpenListService()
-behavior_analytics_service = BehaviorAnalyticsService(data_dir=str(BASE_DIR / "data"))
+behavior_analytics_service = BehaviorAnalyticsService(data_dir=str(BASE_DIR / "data"), storage=Storage())
 
 
 @asynccontextmanager

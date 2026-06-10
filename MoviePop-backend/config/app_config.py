@@ -66,6 +66,10 @@ class AppConfig:
         self.OPENLIST_BINARY_VERSION = ""
         self.OPENLIST_SOURCE_MODE = "builtin"
 
+<<<<<<< Updated upstream
+=======
+
+>>>>>>> Stashed changes
         self.DATA_DIR.mkdir(exist_ok=True)
         self.COVERS_DIR.mkdir(exist_ok=True)
 
@@ -116,6 +120,11 @@ class AppConfig:
             "binary_version": self.OPENLIST_BINARY_VERSION,
             "source_mode": self.normalize_openlist_source_mode(self.OPENLIST_SOURCE_MODE),
         }
+<<<<<<< Updated upstream
+=======
+        config["analytics"] = {
+        }
+>>>>>>> Stashed changes
         with open(self.CONFIG_FILE, "w", encoding="utf-8") as file:
             config.write(file)
 
@@ -191,6 +200,12 @@ class AppConfig:
                 self.OPENLIST_BINARY_VERSION = openlist_config.get("binary_version", "").strip()
                 self.OPENLIST_SOURCE_MODE = self.normalize_openlist_source_mode(openlist_config.get("source_mode", "builtin"))
 
+<<<<<<< Updated upstream
+=======
+            if "analytics" in config:
+                analytics_config = config["analytics"]
+
+>>>>>>> Stashed changes
             self._auto_detect_players()
             self.DEFAULT_PLAYER = "mpv_desktop"
             self.SCRAPE_SOURCE = "auto"

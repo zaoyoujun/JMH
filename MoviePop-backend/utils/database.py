@@ -1,5 +1,14 @@
+﻿"""
+VideoCache adapter: delegates business data to SQLite Storage,
+keeps playback_progress.json as JSON for real-time frontend access.
+"""
+
+from __future__ import annotations
+
 import json
+import time
 from pathlib import Path
+<<<<<<< Updated upstream
 from typing import Any, Dict, List, Optional
 
 from config.app_config import AppConfig
@@ -84,26 +93,30 @@ class VideoCacheBase:
 
 class VideoCacheJson(VideoCacheBase):
     def __init__(self):
+=======
+from typing import Any
+
+from config.app_config import AppConfig
+from utils.storage import Storage
+
+
+class VideoCache:
+    """Backward-compatible adapter over Storage + playback JSON."""
+
+    def __init__(self) -> None:
+>>>>>>> Stashed changes
         self.config = AppConfig()
+        self.storage = Storage()
         self.cache_file = self.config.DATA_DIR / "video_cache.json"
-        self.favorite_file = self.config.DATA_DIR / "favorite.json"
-        self.recent_file = self.config.DATA_DIR / "recent_play.json"
-        self.custom_info_file = self.config.DATA_DIR / "custom_movie_info.json"
-        self.tags_file = self.config.DATA_DIR / "movie_tags.json"
         self.playback_file = self.config.DATA_DIR / "playback_progress.json"
 
-    def _is_valid_video_list(self, data):
-        if not isinstance(data, list):
-            return False
-        for item in data:
-            if not isinstance(item, dict):
-                return False
-            if "path" not in item or "title" not in item:
-                return False
-        return True
+    # ------------------------------------------------------------------
+    # video_cache -> Storage
+    # ------------------------------------------------------------------
 
-    def save_cache(self, video_list):
+    def save_cache(self, video_list: list[dict[str, Any]]) -> bool:
         try:
+<<<<<<< Updated upstream
             cache_data = {
                 "webdav_host": self.config.WEBDAV_HOST,
                 "version": 2,
@@ -157,15 +170,88 @@ class VideoCacheJson(VideoCacheBase):
 
             with open(self.cache_file, "w", encoding="utf-8") as f:
                 json.dump(cache_data, f, ensure_ascii=False, indent=2)
+=======
+            self.storage.save_video_cache(video_list)
+>>>>>>> Stashed changes
             return True
         except Exception as e:
             logger.error(f"保存缓存失败: {e}")
             return False
 
-    def load_cache(self):
-        if not self.cache_file.exists():
-            return None
+    def load_cache(self) -> list[dict[str, Any]] | None:
+        return self.storage.load_video_cache()
+
+    # ------------------------------------------------------------------
+    # favorites -> Storage
+    # ------------------------------------------------------------------
+
+    def get_favorites(self) -> list[dict[str, Any]]:
+        return self.storage.get_favorites()
+
+    def is_favorite(self, movie_path: str) -> bool:
+        return self.storage.is_favorite(movie_path)
+
+    def add_favorite(self, movie: dict[str, Any]) -> None:
+        self.storage.add_favorite(movie)
+
+    def remove_favorite(self, movie_path: str) -> None:
+        self.storage.remove_favorite(movie_path)
+
+    # ------------------------------------------------------------------
+    # recent_play -> Storage
+    # ------------------------------------------------------------------
+
+    def get_recent_play(self) -> list[dict[str, Any]]:
+        return self.storage.get_recent_play()
+
+    def add_recent_play(self, movie: dict[str, Any]) -> None:
+        self.storage.add_recent_play(movie)
+
+    # ------------------------------------------------------------------
+    # tags -> Storage
+    # ------------------------------------------------------------------
+
+    def get_all_tags(self) -> dict[str, list[str]]:
+        return self.storage.get_all_tags()
+
+    def get_movie_tags(self, movie_path: str) -> list[str]:
+        return self.storage.get_movie_tags(movie_path)
+
+    def add_movie_tag(self, movie_path: str, tag: str) -> None:
+        self.storage.add_movie_tag(movie_path, tag)
+
+    def remove_movie_tag(self, movie_path: str, tag: str) -> None:
+        self.storage.remove_movie_tag(movie_path, tag)
+
+    def get_movies_by_tag(self, tag: str) -> list[str]:
+        return self.storage.get_movies_by_tag(tag)
+
+    # ------------------------------------------------------------------
+    # custom_info -> Storage
+    # ------------------------------------------------------------------
+
+    def get_all_custom_info(self) -> dict[str, dict[str, Any]]:
+        return self.storage.get_all_custom_info()
+
+    def get_custom_info(self, movie_path: str) -> dict[str, Any]:
+        return self.storage.get_custom_info(movie_path)
+
+    def save_custom_info(self, movie_path: str, info: dict[str, Any]) -> None:
+        self.storage.save_custom_info(movie_path, info)
+
+    # ------------------------------------------------------------------
+    # playback_progress -> JSON (unchanged for frontend direct access)
+    # ------------------------------------------------------------------
+
+    def save_playback_progress(
+        self,
+        movie_path: str,
+        progress: float,
+        duration: float,
+        episode_index: int | None = None,
+    ) -> None:
         try:
+<<<<<<< Updated upstream
             with open(self.cache_file, "r", encoding="utf-8") as f:
                 cache_data = json.load(f)
 
@@ -383,16 +469,20 @@ class VideoCacheJson(VideoCacheBase):
         try:
             playback_data = self.get_all_playback_progress()
             playback_data[movie_path] = {
+=======
+            data = self._read_playback_json()
+            data[movie_path] = {
+>>>>>>> Stashed changes
                 "progress": progress,
                 "duration": duration,
                 "episode_index": int(episode_index or 0),
-                "timestamp": self._get_timestamp()
+                "timestamp": int(time.time()),
             }
-            with open(self.playback_file, "w", encoding="utf-8") as f:
-                json.dump(playback_data, f, ensure_ascii=False, indent=2)
+            self._write_playback_json(data)
         except Exception as e:
             logger.error(f"保存播放进度失败: {e}")
 
+<<<<<<< Updated upstream
     def get_playback_progress(self, movie_path):
         playback_data = self.get_all_playback_progress()
         return playback_data.get(movie_path, {})
@@ -410,19 +500,28 @@ class VideoCacheJson(VideoCacheBase):
         return {}
 
     def clear_playback_progress(self, movie_path=None):
+=======
+    def get_playback_progress(self, movie_path: str) -> dict[str, Any]:
+        data = self._read_playback_json()
+        return data.get(movie_path, {})
+
+    def get_all_playback_progress(self) -> dict[str, dict[str, Any]]:
+        return self._read_playback_json()
+
+    def clear_playback_progress(self, movie_path: str | None = None) -> None:
+>>>>>>> Stashed changes
         try:
             if movie_path:
-                playback_data = self.get_all_playback_progress()
-                if movie_path in playback_data:
-                    del playback_data[movie_path]
-                with open(self.playback_file, "w", encoding="utf-8") as f:
-                    json.dump(playback_data, f, ensure_ascii=False, indent=2)
+                data = self._read_playback_json()
+                data.pop(movie_path, None)
+                self._write_playback_json(data)
             else:
                 if self.playback_file.exists():
                     self.playback_file.unlink()
         except Exception as e:
             logger.error(f"清除播放进度失败: {e}")
 
+<<<<<<< Updated upstream
     def _get_timestamp(self):
         import time
         return int(time.time())
@@ -637,3 +736,22 @@ class VideoCache:
 
     def clear_playback_progress(self, movie_path: str = None) -> bool:
         return self._get_cache().clear_playback_progress(movie_path)
+=======
+    # ------------------------------------------------------------------
+    # JSON file helpers
+    # ------------------------------------------------------------------
+
+    def _read_playback_json(self) -> dict[str, Any]:
+        if not self.playback_file.exists():
+            return {}
+        try:
+            with open(self.playback_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                return data if isinstance(data, dict) else {}
+        except Exception:
+            return {}
+
+    def _write_playback_json(self, data: dict[str, Any]) -> None:
+        with open(self.playback_file, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+>>>>>>> Stashed changes
